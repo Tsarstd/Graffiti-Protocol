@@ -99,11 +99,9 @@ To bypass aggressive rate limits or authenticate a heavy query, a client can sub
 \`\`\`json
 {
   "type": "NEW_BLOCK",
-  "block": {
-    "header": { ... },
-    "transactions": [ ... ]
-  },
-  "rpc_source": "miner"
+  "data": "<base64_storage_bytes>",
+  "hash": "00000000a1b2c3d4e5f6...",
+  "port": 8333
 }
 \`\`\``
     },

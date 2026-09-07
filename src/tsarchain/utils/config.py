@@ -456,7 +456,7 @@ HEADERS_BATCH_MAX         = 4096  # number of headers requested per batch
 HEADERS_LOCATOR_DEPTH     = 64  # entries kept in locator list when syncing
 HEADERS_FANOUT            = 32  # peers to fan out header requests to
 HEADERS_SYNC_MIN_INTERVAL = 1  # seconds between header sync loops
-BLOCK_DOWNLOAD_BATCH_MAX  = 2048  # concurrent block download cap
+BLOCK_DOWNLOAD_BATCH_MAX  = 256   # concurrent block download cap
 
 
 # ---- PEER QUOTAS ----

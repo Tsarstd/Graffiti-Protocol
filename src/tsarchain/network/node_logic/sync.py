@@ -5,10 +5,13 @@
 
 from __future__ import annotations
 
+import base64
+import struct
 import time
 import random
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
+from ...core.block import Block
 from ...utils import config as CFG
 
 from ...utils.tsar_logging import get_ctx_logger
@@ -307,15 +310,25 @@ def _download_blocks(self, peer: Tuple[str, int], heights: List[int]) -> Tuple[i
             )
             break
 
-        if resp.get("type") == "BLOCKS":
-            blocks = resp.get("blocks") or []
+        resp_type = resp.get("type")
+        if resp_type == "BLOCKS_BIN":
+            raw_b64 = resp.get("data") or ""
+            raw = base64.b64decode(raw_b64)
+            offset = 0
+            blocks = []
+            while offset < len(raw):
+                (blen,) = struct.unpack_from("<I", raw, offset)
+                offset += 4
+                blk = Block.from_storage_bytes(raw[offset : offset + blen])
+                offset += blen
+                blocks.append(blk)
             total_applied, elapsed, stop = _process_downloaded_blocks(
                 self, peer, blocks, start_time, total_applied
             )
             if stop:
                 return total_applied, elapsed
 
-        elif resp.get("type") == "SYNC_REJECT":
+        elif resp_type == "SYNC_REJECT":
             retry = float(resp.get("retry_after", 30.0))
             log.info(
                 "[_download_blocks] %s asked to retry later (retry %.1fs)",
@@ -324,17 +337,17 @@ def _download_blocks(self, peer: Tuple[str, int], heights: List[int]) -> Tuple[i
             )
             break
         else:
-            log.info("[_download_blocks] %s returned unexpected type=%s", peer, resp.get("type"))
+            log.info("[_download_blocks] %s returned unexpected type=%s", peer, resp_type)
             break
 
     elapsed = time.time() - start_time
     return total_applied, elapsed
 
 
-def _process_downloaded_blocks(self, peer, blocks, start_time, total_applied):
+def _process_downloaded_blocks(self, peer, blocks: List[Block], start_time, total_applied):
     for block_obj in blocks:
-        h = int(block_obj.get("height", -1))
-        bh = str(block_obj.get("hash") or "")
+        h = int(block_obj.height or 0)
+        bh = block_obj.hash().hex()
         local_chain = self.broadcast.blockchain.chain
         if 0 <= h < len(local_chain):
             local_hash = local_chain[h].hash().hex()
@@ -348,15 +361,14 @@ def _process_downloaded_blocks(self, peer, blocks, start_time, total_applied):
         if applied:
             total_applied += 1
         else:
-            blk_hash = block_obj.get("hash")
-            label = str(blk_hash or "unknown")
+            label = str(bh or "unknown")
             log.warning("[_process_downloaded_blocks] Block %s rejected during sync from %s", label[:12], peer)
             self.request_sync(fast=True)
             return total_applied, time.time() - start_time, True
     return total_applied, 0.0, False
 
 
-def _apply_block_from_sync(self, block_obj: Dict[str, Any], peer: Tuple[str, int]) -> bool:
+def _apply_block_from_sync(self, block_obj: Any, peer: Tuple[str, int]) -> bool:
     message = {
         "type": "NEW_BLOCK",
         "data": block_obj,

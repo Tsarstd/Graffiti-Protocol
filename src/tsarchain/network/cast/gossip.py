@@ -5,6 +5,7 @@
 
 import time
 import json
+import base64
 import socket
 import threading
 
@@ -65,12 +66,14 @@ class GossipHandler(BroadcastHandlerProxy):
             self.seen_blocks.add(block_id)
 
         p = self.port
+        raw_b64 = base64.b64encode(block.to_storage_bytes()).decode("ascii")
 
         success = self.send_gossip(
             peers,
             {
                 "type": "NEW_BLOCK",
-                "data": block.to_dict(),
+                "data": raw_b64,
+                "hash": block_id,
                 "port": p or 0,
             },
             exclude,

@@ -333,23 +333,42 @@ def test_determine_missing_blocks(mock_node):
 # ---------------------------------------------------------
 # _download_blocks tests
 # ---------------------------------------------------------
+# _download_blocks tests (100% binary)
+# ---------------------------------------------------------
 @patch("tsarchain.network.node_logic.sync._apply_block_from_sync")
+@patch("tsarchain.network.node_logic.sync.Block.from_storage_bytes")
 @patch("tsarchain.network.node_logic.sync.CFG")
-def test_download_blocks_success(mock_cfg, mock_apply, mock_node):
+def test_download_blocks_success(mock_cfg, mock_from_storage, mock_apply, mock_node):
+    import base64
+    import struct
+    from tsarchain.core.block import Block
+
     mock_cfg.BLOCK_DOWNLOAD_BATCH_MAX = 10
     mock_cfg.SYNC_TIMEOUT = 10.0
     peer = ("127.0.0.1", 8333)
     heights = [101, 102]
-    
+
+    b1 = Block(height=101, prev_block_hash=b"\x00" * 32, transactions=[], nonce=1)
+    b2 = Block(height=102, prev_block_hash=b"\x00" * 32, transactions=[], nonce=2)
+    mock_from_storage.side_effect = [b1, b2]
+
+    raw_payload = (
+        struct.pack("<I", len(b"raw1")) + b"raw1" +
+        struct.pack("<I", len(b"raw2")) + b"raw2"
+    )
+    b64_payload = base64.b64encode(raw_payload).decode("ascii")
+
     mock_node.rpc_request = MagicMock(return_value={
-        "type": "BLOCKS",
-        "blocks": [{"height": 101, "hash": "new1"}, {"height": 102, "hash": "new2"}]
+        "type": "BLOCKS_BIN",
+        "count": 2,
+        "data": b64_payload
     })
     mock_apply.return_value = True
-    
+
     applied, elapsed = _download_blocks(mock_node, peer, heights)
     assert applied == 2
     assert mock_apply.call_count == 2
+    assert mock_from_storage.call_count == 2
 
 
 @patch("tsarchain.network.node_logic.sync.CFG")
@@ -369,16 +388,28 @@ def test_download_blocks_reject(mock_cfg, mock_node):
 
 
 @patch("tsarchain.network.node_logic.sync._apply_block_from_sync")
+@patch("tsarchain.network.node_logic.sync.Block.from_storage_bytes")
 @patch("tsarchain.network.node_logic.sync.CFG")
-def test_download_blocks_reorg_mismatch(mock_cfg, mock_apply, mock_node):
+def test_download_blocks_reorg_mismatch(mock_cfg, mock_from_storage, mock_apply, mock_node):
+    import base64
+    import struct
+    from tsarchain.core.block import Block
+
     mock_cfg.BLOCK_DOWNLOAD_BATCH_MAX = 10
     mock_cfg.SYNC_TIMEOUT = 10.0
     peer = ("127.0.0.1", 8333)
     heights = [100]  # Local chain already has height 100 with "hash_100"
-    
+
+    b_diff = Block(height=100, prev_block_hash=b"\x00" * 32, transactions=[], nonce=999)
+    mock_from_storage.return_value = b_diff
+
+    raw_payload = struct.pack("<I", len(b"raw")) + b"raw"
+    b64_payload = base64.b64encode(raw_payload).decode("ascii")
+
     mock_node.rpc_request = MagicMock(return_value={
-        "type": "BLOCKS",
-        "blocks": [{"height": 100, "hash": "different_hash"}]
+        "type": "BLOCKS_BIN",
+        "count": 1,
+        "data": b64_payload
     })
     mock_apply.return_value = False
     mock_node.request_sync = MagicMock()

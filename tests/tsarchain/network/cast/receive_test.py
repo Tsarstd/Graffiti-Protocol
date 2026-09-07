@@ -2,6 +2,7 @@
 # Copyright (c) 2025 Tsar Studio
 # Part of TsarChain - see LICENSE
 
+import base64
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -180,18 +181,18 @@ def test_native_precheck_block(dummy_node):
 def test_receive_block_empty(dummy_node):
     assert dummy_node.receive_block({}, ("127.0.0.1", 8333), set()) is False
 
-@patch("tsarchain.network.cast.receive.Block")
-def test_receive_block_already_seen(mock_block_class, dummy_node):
-    mock_block = MagicMock()
-    mock_block.hash.return_value.hex.return_value = "blockhash"
-    mock_block_class.from_dict.return_value = mock_block
+def test_receive_block_already_seen(dummy_node):
+    h = "a" * 64
+    dummy_node.seen_blocks.add(h)
     
-    dummy_node.seen_blocks.add("blockhash")
-    
-    msg = {"data": {"hash": "blockhash"}}
+    msg = {"hash": h, "data": "dummy"}
     assert dummy_node.receive_block(msg, ("127.0.0.1", 8333), set()) is True
     
     dummy_node.blockchain.add_block.assert_not_called()
+
+def test_receive_block_legacy_dict_rejected(dummy_node):
+    msg = {"data": {"height": 10, "hash": "abc"}}
+    assert dummy_node.receive_block(msg, ("127.0.0.1", 8333), set()) is False
 
 @patch("tsarchain.network.cast.receive.Block")
 def test_receive_block_success(mock_block_class, dummy_node):
@@ -199,7 +200,7 @@ def test_receive_block_success(mock_block_class, dummy_node):
     mock_block.height = 10
     mock_block.transactions = []
     mock_block.hash.return_value.hex.return_value = "newhash"
-    mock_block_class.from_dict.return_value = mock_block
+    mock_block_class.from_storage_bytes.return_value = mock_block
     
     dummy_node.blockchain.get_last_block.return_value.height = 9
     dummy_node.blockchain.get_last_block.return_value.hash.return_value = "prevhash"
@@ -209,7 +210,8 @@ def test_receive_block_success(mock_block_class, dummy_node):
     dummy_node.blockchain.add_block.return_value = True
     
     with patch.object(dummy_node, "_native_precheck_block", return_value=True):
-        msg = {"data": {"hash": "newhash"}}
+        raw = base64.b64encode(b"raw_block_bytes").decode("ascii")
+        msg = {"data": raw}
         assert dummy_node.receive_block(msg, ("127.0.0.1", 8333), set()) is True
         
         dummy_node.blockchain.add_block.assert_called_once_with(mock_block)
@@ -299,11 +301,13 @@ def test_native_precheck_block_compact_validation(dummy_node):
 def test_receive_block_gap(mock_block_class, dummy_node):
     mock_block = MagicMock()
     mock_block.height = 20
-    mock_block_class.from_dict.return_value = mock_block
+    mock_block.hash.return_value.hex.return_value = "newhash"
+    mock_block_class.from_storage_bytes.return_value = mock_block
     
     dummy_node.blockchain.get_last_block.return_value.height = 10
     
-    msg = {"data": {"hash": "newhash"}}
+    raw = base64.b64encode(b"raw_block_bytes").decode("ascii")
+    msg = {"data": raw}
     assert dummy_node.receive_block(msg, ("127.0.0.1", 8333), {("127.0.0.1", 8333)}) is False
     dummy_node.network.handle_block_gap.assert_called_once()
 
@@ -311,8 +315,9 @@ def test_receive_block_gap(mock_block_class, dummy_node):
 def test_receive_block_validation_fails_prevout(mock_block_class, dummy_node):
     mock_block = MagicMock()
     mock_block.height = 10
+    mock_block.hash.return_value.hex.return_value = "newhash"
     mock_block.prev_block_hash = "prevhash"
-    mock_block_class.from_dict.return_value = mock_block
+    mock_block_class.from_storage_bytes.return_value = mock_block
     
     dummy_node.blockchain.get_last_block.return_value.height = 9
     dummy_node.blockchain.get_last_block.return_value.hash.return_value = "prevhash"
@@ -321,15 +326,17 @@ def test_receive_block_validation_fails_prevout(mock_block_class, dummy_node):
     dummy_node.blockchain.validate_block.return_value = False
     dummy_node.blockchain._last_block_validation_error = "prevout_missing: xyz"
     
-    msg = {"data": {"hash": "newhash"}}
+    raw = base64.b64encode(b"raw_block_bytes").decode("ascii")
+    msg = {"data": raw}
     assert dummy_node.receive_block(msg, ("127.0.0.1", 8333), {("127.0.0.1", 8333)}) is False
 
 @patch("tsarchain.network.cast.receive.Block")
 def test_receive_block_add_block_exception_swap_tip(mock_block_class, dummy_node):
     mock_block = MagicMock()
     mock_block.height = 10
+    mock_block.hash.return_value.hex.return_value = "newhash"
     mock_block.prev_block_hash = "parent_hash"
-    mock_block_class.from_dict.return_value = mock_block
+    mock_block_class.from_storage_bytes.return_value = mock_block
     
     parent_block = MagicMock()
     parent_block.height = 9
@@ -344,7 +351,8 @@ def test_receive_block_add_block_exception_swap_tip(mock_block_class, dummy_node
     dummy_node.blockchain.add_block.side_effect = Exception("db_error")
     dummy_node.blockchain.swap_tip_if_better.return_value = MagicMock(transactions=[])
     
-    msg = {"data": {"hash": "newhash"}}
+    raw = base64.b64encode(b"raw_block_bytes").decode("ascii")
+    msg = {"data": raw}
     assert dummy_node.receive_block(msg, ("127.0.0.1", 8333), {("127.0.0.1", 8333)}) is True
     dummy_node.blockchain.swap_tip_if_better.assert_called_once()
 
@@ -364,3 +372,50 @@ def test_receive_mempool_not_caught_up(dummy_node):
     dummy_node.network.is_caught_up.return_value = False
     dummy_node.receive_mempool({"data": []})
     dummy_node.network.request_sync.assert_called_once_with(fast=True)
+
+
+@patch("tsarchain.network.cast.receive.Block")
+def test_receive_block_raw_bytes(mock_block_class, dummy_node):
+    mock_block = MagicMock()
+    mock_block.height = 10
+    mock_block.transactions = []
+    mock_block.hash.return_value.hex.return_value = "byteshash"
+    mock_block_class.from_storage_bytes.return_value = mock_block
+
+    dummy_node.blockchain.get_last_block.return_value.height = 9
+    dummy_node.blockchain.get_last_block.return_value.hash.return_value = "prevhash"
+    mock_block.prev_block_hash = "prevhash"
+
+    dummy_node.blockchain.validate_block.return_value = True
+    dummy_node.blockchain.add_block.return_value = True
+
+    with patch.object(dummy_node, "_native_precheck_block", return_value=True):
+        msg = {"data": b"raw_block_bytes"}
+        assert dummy_node.receive_block(msg, ("127.0.0.1", 8333), set()) is True
+        mock_block_class.from_storage_bytes.assert_called_once_with(b"raw_block_bytes")
+
+
+def test_receive_block_block_instance(dummy_node):
+    mock_block = MagicMock()
+    mock_block.height = 10
+    mock_block.transactions = []
+    mock_block.hash.return_value.hex.return_value = "instancehash"
+
+    dummy_node.blockchain.get_last_block.return_value.height = 9
+    dummy_node.blockchain.get_last_block.return_value.hash.return_value = "prevhash"
+    mock_block.prev_block_hash = "prevhash"
+
+    dummy_node.blockchain.validate_block.return_value = True
+    dummy_node.blockchain.add_block.return_value = True
+
+    with patch.object(dummy_node, "_native_precheck_block", return_value=True):
+        # When type(block_data) is Block (e.g. from sync)
+        with patch("tsarchain.network.cast.receive.Block", new=type(mock_block)):
+            msg = {"data": mock_block}
+            assert dummy_node.receive_block(msg, ("127.0.0.1", 8333), set()) is True
+
+
+def test_receive_block_corrupt_data(dummy_node):
+    msg = {"data": "not_valid_base64!!!"}
+    assert dummy_node.receive_block(msg, ("127.0.0.1", 8333), set()) is False
+
