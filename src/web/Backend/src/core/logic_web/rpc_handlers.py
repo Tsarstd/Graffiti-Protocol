@@ -237,32 +237,13 @@ def rpc_address(client, addr: str):
     cached_hist = rpc_client.cache_get(hist_key)
     cached_vol = rpc_client.cache_get(vol_key)
     
-    # Check legacy cache for migration if new keys not populated
-    if cached_hist is None and cached_vol is None:
-        cached_legacy = rpc_client.cache_get(legacy_key)
-        if cached_legacy is not None and type(cached_legacy) is dict:
-            leg_hist = cached_legacy.get("history") or []
-            leg_conf = [it for it in leg_hist if it.get("status") == "confirmed"]
-            leg_unconf = [it for it in leg_hist if it.get("status") == "unconfirmed"]
-            leg_h = cached_legacy.get("height")
-            cached_hist = {
-                "last_synced_height": leg_h,
-                "items": leg_conf,
-                "total": int(cached_legacy.get("total_txs", len(leg_conf)))
-            }
-            cached_vol = {
-                "spendable": cached_legacy.get("spendable", 0),
-                "immature": cached_legacy.get("immature", 0),
-                "outgoing": cached_legacy.get("outgoing", 0),
-                "incoming": cached_legacy.get("incoming", 0),
-                "balance": cached_legacy.get("balance", 0),
-                "utxo_count": cached_legacy.get("utxo_count", 0),
-                "unconfirmed_items": leg_unconf,
-                "height": leg_h
-            }
-            rpc_client.cache_set(hist_key, cached_hist, ttl_sec=0)
-            rpc_client.cache_set(vol_key, cached_vol, ttl_sec=15)
-            return _assemble_address_response(addr_norm, cached_vol, cached_hist, leg_h)
+    # Invalidate any previously cached history that was capped at <= 200 items while total is larger
+    if cached_hist is not None and type(cached_hist) is dict:
+        tot = int(cached_hist.get("total") or 0)
+        items_cnt = len(cached_hist.get("items") or [])
+        if tot > items_cnt and items_cnt <= 200:
+            cached_hist = None
+            cached_vol = None
 
     # 1. Fast path: volatile cache is fresh (< 15s) and confirmed cache exists
     if cached_vol is not None and type(cached_vol) is dict and cached_hist is not None and type(cached_hist) is dict:
