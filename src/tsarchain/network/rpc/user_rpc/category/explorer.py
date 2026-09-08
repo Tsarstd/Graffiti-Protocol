@@ -307,13 +307,26 @@ def get_tx_history(self, message, pow_obj, base_identity, *,
         return pow_resp
     limit = int(message.get("limit", 50))
     offset = int(message.get("offset", 0))
+    raw_since = message.get("since_height")
+    since_height = None
+    if raw_since is not None and str(raw_since).strip() != "":
+        try:
+            since_height = int(raw_since)
+        except (ValueError, TypeError):
+            since_height = None
     if limit > CFG.MAX_HISTORY_LIMIT:
         limit = CFG.MAX_HISTORY_LIMIT
     with self.broadcast.lock:
         tip_height = int(self.broadcast.blockchain.height)
-    history = self.process_history_lookup(addr_str, limit=limit, offset=offset,
-                                direction=message.get("direction"),
-                                status=message.get("status"))
+    if since_height is not None:
+        history = self.process_history_lookup(addr_str, limit=limit, offset=offset,
+                                    direction=message.get("direction"),
+                                    status=message.get("status"),
+                                    since_height=since_height)
+    else:
+        history = self.process_history_lookup(addr_str, limit=limit, offset=offset,
+                                    direction=message.get("direction"),
+                                    status=message.get("status"))
     history["height"] = tip_height
             
     response_dict = {"type": "TX_HISTORY", "address": addr_str, **history}

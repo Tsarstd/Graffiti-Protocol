@@ -228,32 +228,82 @@ def rpc_tx(client, txid: str):
 @benchmark(label="rpc_address", threshold_ms=15.0)
 def rpc_address(client, addr: str):
     addr_norm = str(addr or "").strip()
-    key = rpc_client.cache_key("address", addr_norm.lower())
-    cached = rpc_client.cache_get(key)
-    if cached is not None:
-        return cached
+    addr_key = addr_norm.lower()
     
+    hist_key = rpc_client.cache_key("addr_hist", addr_key)
+    vol_key = rpc_client.cache_key("addr_vol", addr_key)
+    legacy_key = rpc_client.cache_key("address", addr_key)
+    
+    cached_hist = rpc_client.cache_get(hist_key)
+    cached_vol = rpc_client.cache_get(vol_key)
+    
+    # Check legacy cache for migration if new keys not populated
+    if cached_hist is None and cached_vol is None:
+        cached_legacy = rpc_client.cache_get(legacy_key)
+        if cached_legacy is not None and type(cached_legacy) is dict:
+            leg_hist = cached_legacy.get("history") or []
+            leg_conf = [it for it in leg_hist if it.get("status") == "confirmed"]
+            leg_unconf = [it for it in leg_hist if it.get("status") == "unconfirmed"]
+            leg_h = cached_legacy.get("height")
+            cached_hist = {
+                "last_synced_height": leg_h,
+                "items": leg_conf,
+                "total": int(cached_legacy.get("total_txs", len(leg_conf)))
+            }
+            cached_vol = {
+                "spendable": cached_legacy.get("spendable", 0),
+                "immature": cached_legacy.get("immature", 0),
+                "outgoing": cached_legacy.get("outgoing", 0),
+                "incoming": cached_legacy.get("incoming", 0),
+                "balance": cached_legacy.get("balance", 0),
+                "utxo_count": cached_legacy.get("utxo_count", 0),
+                "unconfirmed_items": leg_unconf,
+                "height": leg_h
+            }
+            rpc_client.cache_set(hist_key, cached_hist, ttl_sec=0)
+            rpc_client.cache_set(vol_key, cached_vol, ttl_sec=15)
+            return _assemble_address_response(addr_norm, cached_vol, cached_hist, leg_h)
+
+    # 1. Fast path: volatile cache is fresh (< 15s) and confirmed cache exists
+    if cached_vol is not None and type(cached_vol) is dict and cached_hist is not None and type(cached_hist) is dict:
+        tip_h = cached_vol.get("height")
+        return _assemble_address_response(addr_norm, cached_vol, cached_hist, tip_h)
+    
+    # 2. Volatile cache expired or missing: fetch fresh balances & total UTXO
     fut_balances = _EXECUTOR.submit(rpc_client.rpc_send, client, {"type": "GET_BALANCES", "addresses": [addr_norm]})
     fut_utxos = _EXECUTOR.submit(rpc_client.rpc_send, client, {"type": "GET_TOTAL_UTXO", "address": addr_norm})
-    fut_history = _EXECUTOR.submit(rpc_client.rpc_send, client, {"type": "GET_TX_HISTORY", "address": addr_norm, "limit": 200})
     
-    balances = fut_balances.result() or {}
-    utxos = fut_utxos.result() or {}
-    history = fut_history.result() or {}
-        
+    synced_h = cached_hist.get("last_synced_height") if (cached_hist and type(cached_hist) is dict) else None
+    
+    if synced_h is None:
+        # First time fetch: query full history (limit 200)
+        fut_history = _EXECUTOR.submit(rpc_client.rpc_send, client, {"type": "GET_TX_HISTORY", "address": addr_norm, "limit": 200})
+        balances = fut_balances.result() or {}
+        utxos = fut_utxos.result() or {}
+        history = fut_history.result() or {}
+    else:
+        # Confirmed history exists: wait for balances to detect current tip_height
+        balances = fut_balances.result() or {}
+        utxos = fut_utxos.result() or {}
+        tip_h = balances.get("height")
+        if tip_h is None:
+            tip_h = db_blocks.get_last_stored_height()
+            
+        if tip_h is not None and tip_h == synced_h:
+            # ponytail: height has not changed, confirmed txs are identical. Query unconfirmed mempool only.
+            history = rpc_client.rpc_send(client, {"type": "GET_TX_HISTORY", "address": addr_norm, "status": "unconfirmed", "limit": 50}) or {}
+        elif tip_h is not None and tip_h > synced_h:
+            # ponytail: height advanced, fetch only delta txs since synced_h
+            history = rpc_client.rpc_send(client, {"type": "GET_TX_HISTORY", "address": addr_norm, "since_height": synced_h, "limit": 200}) or {}
+        else:
+            # Reorg or height reset: full re-fetch
+            history = rpc_client.rpc_send(client, {"type": "GET_TX_HISTORY", "address": addr_norm, "limit": 200}) or {}
+            
     balance_info = balances.get("items", {}).get(addr_norm, {}) if balances else {}
-    out = {
-        "address": addr_norm,
-        "spendable": balance_info.get("spendable", 0),
-        "immature": balance_info.get("immature", 0),
-        "outgoing": balance_info.get("pending_outgoing", 0),
-        "incoming": balance_info.get("pending_incoming", 0),
-        "balance": balance_info.get("balance", 0),
-        "utxo_count": utxos.get("count", 0),
-        "history": history.get("items", []),
-        "height": history.get("height"),
-        "total_txs": history.get("total", 0)
-    }
+    tip_height = history.get("height") or balances.get("height")
+    if tip_height is None and cached_hist and type(cached_hist) is dict:
+        tip_height = cached_hist.get("last_synced_height")
+
     had_error = rpc_client.payload_has_error(balances) or rpc_client.payload_has_error(utxos) or rpc_client.payload_has_error(history)
     if had_error:
         error_ttl = None
@@ -262,13 +312,111 @@ def rpc_address(client, addr: str):
                 ttl = db_cache.get_error_cache_ttl(resp.get("error"))
                 if ttl and (error_ttl is None or ttl > error_ttl):
                     error_ttl = ttl
-        
+        if cached_hist and cached_vol:
+            return _assemble_address_response(addr_norm, cached_vol, cached_hist, tip_height)
+            
+        err_msg = (history.get("error") if history else None) or (balances.get("error") if balances else None) or (utxos.get("error") if utxos else None) or "rpc_error"
+        out = {
+            "address": addr_norm,
+            "spendable": 0, "immature": 0, "outgoing": 0, "incoming": 0, "balance": 0,
+            "utxo_count": 0, "history": [], "height": tip_height, "total_txs": 0,
+            "error": err_msg
+        }
         if error_ttl:
-            rpc_client.cache_set(key, out, error_ttl)
-    else:
-        rpc_client.cache_set(key, out)
+            rpc_client.cache_set(vol_key, out, error_ttl)
+        return out
+
+    items_from_rpc = history.get("items") or []
+    new_unconfirmed = [it for it in items_from_rpc if it.get("status") == "unconfirmed"]
+    new_confirmed = [it for it in items_from_rpc if it.get("status") == "confirmed"]
+
+    if cached_hist is None or (synced_h is not None and tip_height is not None and tip_height < synced_h):
+        # Initial population or reorg reset
+        total_confirmed = int(history.get("total_confirmed") or history.get("total") or len(new_confirmed))
+        cached_hist = {
+            "last_synced_height": tip_height,
+            "items": new_confirmed,
+            "total": total_confirmed
+        }
+        rpc_client.cache_set(hist_key, cached_hist, ttl_sec=0)
+    elif new_confirmed:
+        # Delta merge: prepend new confirmed items and deduplicate
+        existing_items = cached_hist.get("items") or []
+        seen_txids = set()
+        merged_confirmed = []
+        for it in (new_confirmed + existing_items):
+            tid = it.get("txid")
+            if tid and tid not in seen_txids:
+                seen_txids.add(tid)
+                merged_confirmed.append(it)
+        max_cap = int(CFG.MAX_HISTORY_LIMIT or 500)
+        if len(merged_confirmed) > max_cap:
+            merged_confirmed = merged_confirmed[:max_cap]
+            
+        total_confirmed = int(history.get("total_confirmed") or (int(cached_hist.get("total", len(existing_items))) + len(new_confirmed)))
+        cached_hist = {
+            "last_synced_height": tip_height,
+            "items": merged_confirmed,
+            "total": total_confirmed
+        }
+        rpc_client.cache_set(hist_key, cached_hist, ttl_sec=0)
+    elif tip_height is not None and tip_height > int(cached_hist.get("last_synced_height") or 0):
+        cached_hist["last_synced_height"] = tip_height
+        rpc_client.cache_set(hist_key, cached_hist, ttl_sec=0)
+
+    cached_vol = {
+        "spendable": balance_info.get("spendable", 0),
+        "immature": balance_info.get("immature", 0),
+        "outgoing": balance_info.get("pending_outgoing", 0),
+        "incoming": balance_info.get("pending_incoming", 0),
+        "balance": balance_info.get("balance", 0),
+        "utxo_count": utxos.get("count", 0),
+        "unconfirmed_items": new_unconfirmed,
+        "height": tip_height
+    }
+    rpc_client.cache_set(vol_key, cached_vol, ttl_sec=15)
     
+    out = _assemble_address_response(addr_norm, cached_vol, cached_hist, tip_height)
+    rpc_client.cache_set(legacy_key, out, ttl_sec=15)
     return out
+
+
+def _assemble_address_response(addr_norm: str, vol: dict, hist: dict, tip_height: int | None) -> dict:
+    confirmed_items = (hist.get("items") or []) if hist else []
+    unconfirmed_items = (vol.get("unconfirmed_items") or []) if vol else []
+    
+    merged_history = []
+    for it in unconfirmed_items:
+        it_copy = dict(it)
+        it_copy["confirmations"] = 0
+        merged_history.append(it_copy)
+    
+    for it in confirmed_items:
+        it_copy = dict(it)
+        h = it_copy.get("height")
+        if h is not None and tip_height is not None:
+            it_copy["confirmations"] = max(0, int(tip_height) - int(h) + 1)
+        else:
+            it_copy["confirmations"] = 0
+        merged_history.append(it_copy)
+        
+    if len(merged_history) > 200:
+        merged_history = merged_history[:200]
+        
+    total_txs = len(unconfirmed_items) + int(hist.get("total", len(confirmed_items)) if hist else 0)
+    
+    return {
+        "address": addr_norm,
+        "spendable": vol.get("spendable", 0),
+        "immature": vol.get("immature", 0),
+        "outgoing": vol.get("pending_outgoing", 0),
+        "incoming": vol.get("pending_incoming", 0),
+        "balance": vol.get("balance", 0),
+        "utxo_count": vol.get("utxo_count", 0),
+        "history": merged_history,
+        "height": tip_height,
+        "total_txs": total_txs
+    }
 
 
 @benchmark(label="rpc_graffiti", threshold_ms=15.0)

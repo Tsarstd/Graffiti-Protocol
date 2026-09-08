@@ -81,7 +81,7 @@ class HistoryHandler(NetworkHandlerProxy):
 
             self._indexed_count = len(chain)
 
-    def process_history_lookup(self, address: str, limit: int = 50, offset: int = 0, direction: str | None = None, status: str | None = None) -> dict:
+    def process_history_lookup(self, address: str, limit: int = 50, offset: int = 0, direction: str | None = None, status: str | None = None, since_height: int | None = None) -> dict:
         addr, target_spk_hex, err_result = self._validate_history_params(address, limit, offset)
         if err_result:
             return err_result
@@ -98,12 +98,15 @@ class HistoryHandler(NetworkHandlerProxy):
 
         cached_items = self._get_history_from_cache(target_spk_hex, tip_height, tip_hash, mem_seq)
         if cached_items is not None:
-            sliced = self._slice_items(cached_items, limit, offset, direction, status)
+            sliced = self._slice_items(cached_items, limit, offset, direction, status, since_height)
             for it in sliced.get("items", []):
                 if it.get("status") == "confirmed" and it.get("height") is not None:
                     it["confirmations"] = max(0, tip_height - int(it["height"]) + 1)
                 else:
                     it["confirmations"] = 0
+            with self._index_lock:
+                confirmed_len = len(self._addr_tx_index.get(target_spk_hex) or [])
+            sliced["total_confirmed"] = confirmed_len
             return sliced
 
         opmap_chain, opmap_mem = self.build_outpoint_map(chain, mem)
@@ -125,12 +128,15 @@ class HistoryHandler(NetworkHandlerProxy):
         items = self._deduplicate_and_sort_history_items(items)
         self._save_history_to_cache(target_spk_hex, items, tip_height, tip_hash, mem_seq)
 
-        sliced = self._slice_items(items, limit, offset, direction, status)
+        sliced = self._slice_items(items, limit, offset, direction, status, since_height)
         for it in sliced.get("items", []):
             if it.get("status") == "confirmed" and it.get("height") is not None:
                 it["confirmations"] = max(0, tip_height - int(it["height"]) + 1)
             else:
                 it["confirmations"] = 0
+        with self._index_lock:
+            confirmed_len = len(self._addr_tx_index.get(target_spk_hex) or [])
+        sliced["total_confirmed"] = confirmed_len
 
         return sliced
 
@@ -423,12 +429,15 @@ class HistoryHandler(NetworkHandlerProxy):
                 cache.popitem(last=False)
 
 
-    def _slice_items(self, items: list[dict], limit: int, offset: int, direction: str | None, status: str | None) -> dict:
+    def _slice_items(self, items: list[dict], limit: int, offset: int, direction: str | None, status: str | None, since_height: int | None = None) -> dict:
         filtered = items
         if direction in ("in", "out"):
             filtered = [it for it in filtered if it["direction"] == direction]
         if status in ("confirmed", "unconfirmed"):
             filtered = [it for it in filtered if it["status"] == status]
+        if since_height is not None:
+            # ponytail: delta filter returns only txs mined strictly after since_height or unconfirmed mempool txs
+            filtered = [it for it in filtered if it.get("height") is None or int(it["height"]) > int(since_height)]
 
         total = len(filtered)
         start_idx = max(0, int(offset))
@@ -508,12 +517,11 @@ class HistoryHandler(NetworkHandlerProxy):
 
     def _get_history_from_cache(self, target_spk_hex, tip_height, tip_hash, mem_seq):
         cache, cache_lock = self._setup_tx_history_cache()
-        cache_ttl = 10.0
-        now = time.time()
         with cache_lock:
             entry = cache.get(target_spk_hex)
             if entry:
-                if (now - entry.get("ts", 0)) <= cache_ttl and entry.get("tip_height") == tip_height and entry.get("tip_hash") == tip_hash and entry.get("mem_seq") == mem_seq:
+                # ponytail: tip_height + tip_hash + mem_seq is an exact deterministic invariant; no arbitrary 10s expiration
+                if entry.get("tip_height") == tip_height and entry.get("tip_hash") == tip_hash and entry.get("mem_seq") == mem_seq:
                     cache.move_to_end(target_spk_hex)
                     return entry.get("items") or []
                 cache.pop(target_spk_hex, None)

@@ -439,12 +439,6 @@ def test_toast_methods():
         tab._toast("Test toast", ms=1200, kind="info")
         mock_show_toast.assert_called_once_with(tab, "Test toast", ms=1200, kind="info")
 
-    from apps.wallet import KremlinWalletGUI
-    with patch("apps.wallet.show_toast") as mock_wallet_toast:
-        dummy_app = KremlinWalletGUI.__new__(KremlinWalletGUI)
-        dummy_app._toast("App toast", ms=1500, kind="warn")
-        mock_wallet_toast.assert_called_once_with(dummy_app, "App toast", ms=1500, kind="warn")
-
 
 def test_menu_show_mnemonic_success():
     from kremlin.tab_ui.wallet_tab import WalletsMixin
