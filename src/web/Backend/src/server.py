@@ -52,9 +52,19 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
             self.end_headers()
 
 
+        def do_HEAD(self) -> None:
+            try:
+                self._handle_get(is_head=True)
+            except Exception as exc:
+                log.exception("[unhandled_server_error_head]")
+                self.send_response(500)
+                self._set_cors_headers()
+                self.end_headers()
+
+
         def do_GET(self) -> None:
             try:
-                self._handle_get()
+                self._handle_get(is_head=False)
             except Exception as exc:
                 log.exception("[unhandled_server_error]")
                 self._send_json(500, {"error": "internal_error", "detail": str(exc)})
@@ -87,12 +97,12 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
 # =============================================================================
 
 
-        def _handle_get(self) -> None:
+        def _handle_get(self, is_head: bool = False) -> None:
             client_ip = self._get_client_ip()
 
             api_ok, api_hdrs, api_retry = api_limiter.check(client_ip)
             if not api_ok:
-                self._send_json(429, {"error": "rate_limited", "retry_after": api_retry}, api_hdrs)
+                self._send_json(429, {"error": "rate_limited", "retry_after": api_retry}, api_hdrs, is_head=is_head)
                 return
 
             parsed = urllib.parse.urlsplit(self.path)
@@ -104,89 +114,89 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
 
             # 1. Health check
             if path == "/api/health":
-                self._send_json(200, handle_health(), api_hdrs)
+                self._send_json(200, handle_health(), api_hdrs, is_head=is_head)
                 return
 
             # 2. Receipt
             if path == "/api/receipt":
                 code, resp = routes.handle_receipt(query_dict)
-                self._send_json(code, resp, api_hdrs)
+                self._send_json(code, resp, api_hdrs, is_head=is_head)
                 return
 
             # 3. History book
             if path == "/api/history_book":
                 code, resp = routes.handle_history_book(query_dict)
-                self._send_json(code, resp, api_hdrs)
+                self._send_json(code, resp, api_hdrs, is_head=is_head)
                 return
 
             # 4. Network
             if path == "/api/network":
                 code, resp = routes.handle_network()
-                self._send_json(code, resp, api_hdrs)
+                self._send_json(code, resp, api_hdrs, is_head=is_head)
                 return
 
             # 5. Blocks list
             if path == "/api/blocks":
                 code, resp = routes.handle_blocks(query_dict)
-                self._send_json(code, resp, api_hdrs)
+                self._send_json(code, resp, api_hdrs, is_head=is_head)
                 return
 
             # 6. Single Block /api/block/:id
             if path.startswith("/api/block/"):
                 block_id = urllib.parse.unquote(path[11:])
                 code, resp = routes.handle_block(block_id)
-                self._send_json(code, resp, api_hdrs)
+                self._send_json(code, resp, api_hdrs, is_head=is_head)
                 return
 
             # 7. Single Transaction /api/tx/:id
             if path.startswith("/api/tx/"):
                 txid = urllib.parse.unquote(path[8:])
                 code, resp = routes.handle_tx(txid)
-                self._send_json(code, resp, api_hdrs)
+                self._send_json(code, resp, api_hdrs, is_head=is_head)
                 return
 
             # 8. Address /api/address/:addr
             if path.startswith("/api/address/"):
                 addr = urllib.parse.unquote(path[13:])
                 code, resp = routes.handle_address(addr)
-                self._send_json(code, resp, api_hdrs)
+                self._send_json(code, resp, api_hdrs, is_head=is_head)
                 return
 
             # 9. Graffiti Media Streaming /api/graffiti/:artId/media
             if path.startswith("/api/graffiti/") and path.endswith("/media"):
                 media_ok, media_hdrs, media_retry = graffiti_media_limiter.check(client_ip)
                 if not media_ok:
-                    self._send_json(429, {"error": "rate_limited", "retry_after": media_retry}, media_hdrs)
+                    self._send_json(429, {"error": "rate_limited", "retry_after": media_retry}, media_hdrs, is_head=is_head)
                     return
                 art_id = urllib.parse.unquote(path[14:-6])
-                self._serve_graffiti_media(art_id)
+                self._serve_graffiti_media(art_id, is_head=is_head)
                 return
 
             # 10. Graffiti Detail /api/graffiti/:artId
             if path.startswith("/api/graffiti/"):
                 art_id = urllib.parse.unquote(path[14:])
                 code, resp = routes.handle_graffiti_detail(art_id)
-                self._send_json(code, resp, api_hdrs)
+                self._send_json(code, resp, api_hdrs, is_head=is_head)
                 return
 
             # 11. Graffiti List /api/graffiti
             if path == "/api/graffiti":
                 code, resp = routes.handle_graffiti_list(query_dict)
-                self._send_json(code, resp, api_hdrs)
+                self._send_json(code, resp, api_hdrs, is_head=is_head)
                 return
 
             # 12. Search /api/search
             if path == "/api/search":
                 s_ok, s_hdrs, s_retry = search_limiter.check(client_ip)
                 if not s_ok:
-                    self._send_json(429, {"error": "rate_limited", "retry_after": s_retry}, s_hdrs)
+                    self._send_json(429, {"error": "rate_limited", "retry_after": s_retry}, s_hdrs, is_head=is_head)
                     return
                 code, resp = routes.handle_search(query_dict)
-                self._send_json(code, resp, api_hdrs)
+                self._send_json(code, resp, api_hdrs, is_head=is_head)
                 return
 
             # 404 Fallback
-            self._send_json(404, {"error": "not_found"}, api_hdrs)
+            self._send_json(404, {"error": "not_found"}, api_hdrs, is_head=is_head)
 
 
         def _get_client_ip(self) -> str:
@@ -211,7 +221,7 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
             self.send_header("Access-Control-Expose-Headers", "Content-Range, Accept-Ranges, Content-Length, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, Retry-After")
 
 
-        def _send_json(self, status_code: int, data: Any, extra_headers: Optional[Dict[str, str]] = None) -> None:
+        def _send_json(self, status_code: int, data: Any, extra_headers: Optional[Dict[str, str]] = None, is_head: bool = False) -> None:
             try:
                 payload = json.dumps(data, ensure_ascii=True, default=str).encode("utf-8")
             except Exception:
@@ -226,13 +236,14 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
                 for k, v in extra_headers.items():
                     self.send_header(k, str(v))
             self.end_headers()
-            self.wfile.write(payload)
+            if not is_head:
+                self.wfile.write(payload)
 
 
-        def _serve_graffiti_media(self, art_id: str) -> None:
+        def _serve_graffiti_media(self, art_id: str, is_head: bool = False) -> None:
             cleanup_graffiti_cache()
             if not is_art_id(art_id):
-                self._send_json(400, {"error": "invalid_art_id"})
+                self._send_json(400, {"error": "invalid_art_id"}, is_head=is_head)
                 return
 
             meta_resp = routes.svc.get_graffiti_media_meta(art_id)
@@ -240,11 +251,11 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
 
             # 1. Try local cached file
             cached_file = find_cached_file(art_id)
-            if cached_file and self._serve_local_file(cached_file, meta):
+            if cached_file and self._serve_local_file(cached_file, meta, is_head=is_head):
                 return
 
             if not meta or (meta_resp and meta_resp.get("status") != "ok"):
-                self._send_json(404, {"error": "media_not_found"})
+                self._send_json(404, {"error": "media_not_found"}, is_head=is_head)
                 return
 
             try:
@@ -258,14 +269,14 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
                 if info and info.get("status") == "ok" and info.get("cache_path"):
                     resolved = resolve_cache_path(info["cache_path"])
                     if resolved and os.path.isfile(resolved):
-                        if self._serve_local_file(resolved, meta):
+                        if self._serve_local_file(resolved, meta, is_head=is_head):
                             return
 
             # 3. On-demand chunk streaming
-            self._stream_graffiti_chunks(art_id, total_size, meta)
+            self._stream_graffiti_chunks(art_id, total_size, meta, is_head=is_head)
 
 
-        def _serve_local_file(self, file_path: str, meta: Optional[Dict[str, Any]]) -> bool:
+        def _serve_local_file(self, file_path: str, meta: Optional[Dict[str, Any]], is_head: bool = False) -> bool:
             try:
                 if not os.path.isfile(file_path):
                     return False
@@ -297,6 +308,9 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
                     self._set_cors_headers()
                     self.end_headers()
 
+                    if is_head:
+                        return True
+
                     with open(file_path, "rb") as f:
                         f.seek(start)
                         remaining = content_length
@@ -317,6 +331,9 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
                 self._set_cors_headers()
                 self.end_headers()
 
+                if is_head:
+                    return True
+
                 with open(file_path, "rb") as f:
                     while True:
                         chunk = f.read(64 * 1024)
@@ -329,7 +346,7 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
                 return False
 
 
-        def _stream_graffiti_chunks(self, art_id: str, total_size: int, meta: Optional[Dict[str, Any]]) -> None:
+        def _stream_graffiti_chunks(self, art_id: str, total_size: int, meta: Optional[Dict[str, Any]], is_head: bool = False) -> None:
             filename = meta.get("filename") if meta else art_id
             media_type = infer_media_type(meta, filename)
 
@@ -366,6 +383,9 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
                     self.send_header("Content-Length", str(total_size))
                 self._set_cors_headers()
                 self.end_headers()
+
+            if is_head:
+                return
 
             curr_offset = start
             target_end = end if total_size > 0 else sys.maxsize
