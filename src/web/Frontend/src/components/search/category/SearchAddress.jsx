@@ -200,7 +200,7 @@ const ResultAddress = ({ data, onSearchClick }) => {
   };
 
   const historyData = data?.history || [];
-  const totalItems = Math.min(historyData.length, 200); // limit
+  const totalItems = historyData.length;
   const totalPages = Math.max(1, Math.ceil(totalItems / ITEMS_PER_PAGE));
   const activePage = Math.min(currentPage, totalPages);
   const startIndex = (activePage - 1) * ITEMS_PER_PAGE;
@@ -215,20 +215,20 @@ const ResultAddress = ({ data, onSearchClick }) => {
   
   const getPageNumbers = () => {
     const pageNumbers = [];
-    const maxVisiblePages = 20;
+    const maxVisiblePages = 8;
     
     if (totalPages <= maxVisiblePages) {
       for (let i = 1; i <= totalPages; i++) {
         pageNumbers.push(i);
       }
-    } else if (activePage <= 3) {
-      for (let i = 1; i <= 4; i++) {
+    } else if (activePage <= 4) {
+      for (let i = 1; i <= 5; i++) {
         pageNumbers.push(i);
       }
       pageNumbers.push('...1', totalPages);
-    } else if (activePage >= totalPages - 2) {
+    } else if (activePage >= totalPages - 3) {
       pageNumbers.push(1, '...2');
-      for (let i = totalPages - 3; i <= totalPages; i++) {
+      for (let i = totalPages - 4; i <= totalPages; i++) {
         pageNumbers.push(i);
       }
     } else {

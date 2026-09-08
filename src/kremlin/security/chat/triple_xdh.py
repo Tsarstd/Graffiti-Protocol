@@ -638,8 +638,7 @@ class ChatManager:
         if resp and resp.get("type") == "CHAT_NONE" and str(resp.get("error")) == "not_registered":
             log.info("[poll] %s belum terdaftar, mencoba auto-register", me)
             return self._ensure_registered(me, lambda err: (
-                self.rpc_send({"type": "CHAT_PULL","address": me,"n": int(n),
-                               "ts": ts_now, "pull_sig": pull_sig}, _on) if not err else (on_done and on_done({"error":"register_failed"}))
+                self.poll(me, n, on_items, on_done) if not err else (on_done and on_done({"error": "register_failed"}))
             ))
 
         try:

@@ -370,16 +370,22 @@ def save_keystore(ks: dict, password: str):
     enc = encrypt_wallet_file(ks, password)
     _write_atomic(WALLET_FILE, enc)
 
-def add_privkey_to_keystore(priv_hex: str, password: str) -> str:
+def add_privkey_to_keystore(priv_hex: str, password: str, mnemonic: str = "") -> str:
     pubkey_bytes = pubkey_from_privhex(priv_hex)
     address = pubkey_to_tsar_address(pubkey_bytes)
 
     ks = load_keystore(password)
     if address in ks["wallets"]:
+        if mnemonic and "mnemonic" not in ks["wallets"][address]:
+            ks["wallets"][address]["mnemonic"] = encrypt_blob(mnemonic.encode("utf-8"), password)
+            save_keystore(ks, password)
         return address
 
     blob = encrypt_privkey(priv_hex, password)
-    ks["wallets"][address] = {"payload": blob, "meta": {"address": address}}
+    entry = {"payload": blob, "meta": {"address": address}}
+    if mnemonic:
+        entry["mnemonic"] = encrypt_blob(mnemonic.encode("utf-8"), password)
+    ks["wallets"][address] = entry
     if not ks.get("default"):
         ks["default"] = address
     save_keystore(ks, password)
@@ -629,7 +635,7 @@ class Wallet:
             priv_bytes = priv_int.to_bytes(32, "big")
         priv_hex = priv_bytes.hex()
 
-        address = add_privkey_to_keystore(priv_hex, password)
+        address = add_privkey_to_keystore(priv_hex, password, mnemonic=mnemonic)
         return address, mnemonic
 
 
@@ -649,7 +655,7 @@ class Wallet:
         seed = mnemo.to_seed(mnemonic, passphrase="")
         priv_bytes = hashlib.sha256(seed).digest()[:32]
         priv_hex = priv_bytes.hex()
-        return add_privkey_to_keystore(priv_hex, password)
+        return add_privkey_to_keystore(priv_hex, password, mnemonic=mnemonic)
 
     @staticmethod
     def unlock(password: str, address: str | None = None) -> Dict:
@@ -673,9 +679,16 @@ class Wallet:
         try:
             enc_blob = wallets[target_addr]["payload"]
             priv_hex = decrypt_privkey(enc_blob, password)
+            mnemonic_phrase = ""
+            if "mnemonic" in wallets[target_addr]:
+                try:
+                    raw_mnemo = decrypt_blob(wallets[target_addr]["mnemonic"], password)
+                    mnemonic_phrase = raw_mnemo.decode("utf-8")
+                except Exception:
+                    log.warning(f"Failed to decrypt mnemonic for {target_addr}")
             Security.record_success(target_addr)
             Security.log_security_event("WALLET_UNLOCKED", target_addr, "Successful unlock (v2)")
-            return {"private_key": priv_hex, "address": target_addr}
+            return {"private_key": priv_hex, "address": target_addr, "mnemonic": mnemonic_phrase}
         except Exception as e:
             log.exception("Unhandled exception")
             Security.record_failure(target_addr)

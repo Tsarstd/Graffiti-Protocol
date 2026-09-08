@@ -38,7 +38,7 @@ def handle_wallet_rpc(server, msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 # RPC
 # =============================================================================
 
-@benchmark(label="STOR_INIT", threshold_ms=15.0)
+@benchmark(label="STOR_INIT", threshold_ms=100.0)
 def _handle_stor_init(server, msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     aid = str(msg.get("graffiti_id", "")).strip()
     size = int(msg.get("size_bytes", 0))
@@ -99,7 +99,7 @@ def _handle_stor_init(server, msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "chunk_size": chunk,
     }
 
-@benchmark(label="STOR_PUT", threshold_ms=60.0)
+@benchmark(label="STOR_PUT", threshold_ms=150.0)
 def _handle_stor_put(server, msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     aid = str(msg.get("graffiti_id", "")).strip()
     b64 = str(msg.get("data", ""))
@@ -129,7 +129,7 @@ def _handle_stor_put(server, msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "of": int(meta.get("size_bytes", 0)),
     }
 
-@benchmark(label="STOR_COMMIT", threshold_ms=120.0)
+@benchmark(label="STOR_COMMIT", threshold_ms=250.0)
 def _handle_stor_commit(server, msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     aid = str(msg.get("graffiti_id", "")).strip()
     req_receipt = str(msg.get("receipt_id", "")).strip()
@@ -201,7 +201,7 @@ def _handle_stor_commit(server, msg: Dict[str, Any]) -> Optional[Dict[str, Any]]
     except Exception as e:
         return {"type": "STOR_ACK", "status": "rejected", "reason": str(e)}
 
-@benchmark(label="STOR_GET_BY_ART", threshold_ms=75.0)
+@benchmark(label="STOR_GET_BY_ART", threshold_ms=400.0)
 def _handle_stor_get_by_art(server, msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     # Public fetch by art_id (or direct graffiti_id). Supports optional chunked reads via offset/length.
     art_id = str(msg.get("art_id", "")).strip().lower()

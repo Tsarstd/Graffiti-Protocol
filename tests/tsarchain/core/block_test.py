@@ -280,3 +280,24 @@ def test_block_repr():
         assert "--- Block 1 ---" in r
         assert "PrevHash : " + b"prev".hex() in r
         assert "Hash     : " + b"hash".hex() in r
+
+
+def test_block_storage_bytes_coinbase_validation():
+    from tsarchain.core.coinbase import CoinbaseTx
+    from tsarchain.consensus.validation import BlockValidator
+    from tsarchain.utils.helpers import spkhex_to_address
+
+    addr = spkhex_to_address("0014" + "00" * 20)
+    cb = CoinbaseTx(to_address=addr, reward=5000000000, block_id="blk_0", height=0)
+    b = Block(height=0, prev_block_hash=b"\x00" * 32, transactions=[cb], timestamp=1000, bits=0x1F00FFFF, nonce=123)
+    raw = b.to_storage_bytes()
+    restored = Block.from_storage_bytes(raw)
+    assert len(restored.transactions) == 1
+    assert restored.transactions[0].is_coinbase is True
+
+    mock_bc = MagicMock()
+    validator = BlockValidator(mock_bc)
+    ok = validator.compute_txids_for_block(restored)
+    assert ok is True
+
+

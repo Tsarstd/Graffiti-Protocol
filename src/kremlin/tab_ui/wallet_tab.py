@@ -14,7 +14,7 @@ from tkinter import messagebox, scrolledtext, Toplevel, filedialog, simpledialog
 
 # ---------------- Local Project (Wallet Only) ----------------
 from ..theme import FONT
-from ..ui_utils import center_window
+from ..ui_utils import center_window, show_toast
 from ..services.tx_history import HistoryService
 from ..security.data_security import (
     Wallet,
@@ -314,6 +314,9 @@ class WalletController:
 # ---------------- Wallets Mixin ----------------
 class WalletsMixin:
     
+    def _toast(self, text: str, ms: int = 1800, kind: str = "info") -> None:
+        show_toast(self, text, ms=ms, kind=kind)
+
     def _build_wallets_frame(self) -> None:
         
         self.wallet_controller = WalletController(self)
@@ -370,7 +373,7 @@ class WalletsMixin:
         right = tk.Frame(top, bg=self.bg); right.pack(side=tk.RIGHT, anchor="e")
 
         tk.Button(
-            left, text="Create New Address", command=self.create_wallet,
+            left, text="Create New Address", command=self.create_new_address,
             bg=self.accent, fg="#ffffff", bd=0, relief="ridge",
             padx=12, pady=6, highlightthickness=0, cursor="hand2"
         ).pack(side=tk.LEFT, padx=(0,6))
@@ -443,6 +446,7 @@ class WalletsMixin:
             )
             mm = tk.Menu(action_btn, tearoff=False)
             mm.add_command(label="See Private Key", command=lambda a=addr: self._menu_show_priv(a))
+            mm.add_command(label="See 12 Seeds Phrase", command=lambda a=addr: self._menu_show_mnemonic(a))
             mm.add_separator()
             mm.add_command(label=TEXT_DELETE_ADDRESS, command=lambda a=addr: self._menu_delete_addr(a))
             action_btn["menu"] = mm
@@ -476,7 +480,7 @@ class WalletsMixin:
 
         d = tk.Toplevel(self.root); d.title("Private Key"); d.configure(bg=self.bg); d.resizable(False, False)
         tk.Label(d, text=addr, bg=self.bg, fg=self.muted, font=("Consolas", 9)).pack(padx=14, pady=(12,0))
-        v = tk.StringVar(value="*" * len(priv))
+        v = tk.StringVar(d, value="*" * len(priv))
         shown = {"v": False}
         box = tk.Frame(d, bg=self.bg); box.pack(padx=14, pady=10)
         ent = tk.Entry(box, textvariable=v, width=68, bg=self.panel_bg, fg=self.fg, insertbackground=self.fg, relief="flat")
@@ -489,6 +493,43 @@ class WalletsMixin:
         btn.pack(side=tk.LEFT, padx=6)
         def copy():
             self.root.clipboard_clear(); self.root.clipboard_append(priv)
+            self._toast("Copied to clipboard", kind="info")
+        center_window(d, self.root)
+        tk.Button(d, text="Copy", command=copy, bg=self.accent, fg="#fff", bd=0).pack(pady=(0,12))
+
+    def _menu_show_mnemonic(self, addr: str) -> None:
+        pwd = self._ask_password("Unlock Address", f"Input Password For\n{addr}:")
+        if not pwd:
+            return
+        try:
+            w = Wallet.unlock(pwd, addr)
+        except Exception:
+            messagebox.showerror("Error", "Failed to unlock address. Incorrect password?")
+            return
+        phrase = w.get("mnemonic") or ""
+        if not phrase:
+            messagebox.showwarning(
+                "Not available",
+                "12 seeds phrase not found for this address.\n"
+                "(Addresses imported via private key do not have a seed phrase.)"
+            )
+            return
+
+        d = tk.Toplevel(self.root); d.title("12 Seeds Phrase"); d.configure(bg=self.bg); d.resizable(False, False)
+        tk.Label(d, text=addr, bg=self.bg, fg=self.muted, font=("Consolas", 9)).pack(padx=14, pady=(12,0))
+        v = tk.StringVar(d, value="*" * len(phrase))
+        shown = {"v": False}
+        box = tk.Frame(d, bg=self.bg); box.pack(padx=14, pady=10)
+        ent = tk.Entry(box, textvariable=v, width=68, bg=self.panel_bg, fg=self.fg, insertbackground=self.fg, relief="flat")
+        ent.pack(side=tk.LEFT)
+        def toggle():
+            shown["v"] = not shown["v"]
+            v.set(phrase if shown["v"] else ("*" * len(phrase)))
+            btn.config(text=("🙈" if shown["v"] else "👁"))
+        btn = tk.Button(box, text="👁", command=toggle, bg=self.panel_bg, fg=self.fg, bd=0)
+        btn.pack(side=tk.LEFT, padx=6)
+        def copy():
+            self.root.clipboard_clear(); self.root.clipboard_append(phrase)
             self._toast("Copied to clipboard", kind="info")
         center_window(d, self.root)
         tk.Button(d, text="Copy", command=copy, bg=self.accent, fg="#fff", bd=0).pack(pady=(0,12))
@@ -739,29 +780,6 @@ class WalletsMixin:
             lines.append(f"Incoming: {sat_to_tsar(_sat(incoming))}")
         return "\n".join(lines)
 
-    def _reg(self, addr: str) -> None:
-        try:
-            if self.wallets is None:
-                self.wallets = []
-        except AttributeError:
-            self.wallets = []
-        if addr and addr not in self.wallets:
-            self.wallets.append(addr)
-            save_registry(self.wallets)
-        try:
-            if self.wallet_count_label:
-                self.wallet_count_label.config(text=f"Wallets: {len(self.wallets)}")
-        except AttributeError:
-            pass
-        try:
-            self.reload_addresses()
-        except (AttributeError, TypeError):
-            pass
-        try:
-            self._render_wallet_list()
-        except (AttributeError, TypeError):
-            pass
-
     # ------- Secure Mnemonic Dialog -------
     def _show_mnemonic_dialog(self, addr: str, mnemonic: str) -> None:
         def _safe_cancel_timer():
@@ -794,10 +812,10 @@ class WalletsMixin:
                 messagebox.showwarning(
                     "Security Timeout",
                     "Mnemonic was auto-cleared.\n"
-                    "Wallet has been createdâ€”export your phrase later.")
+                    "Wallet has been created—export your phrase later.")
 
         dialog = tk.Toplevel(self.root)
-        dialog.title("ðŸ”’ Wallet Recovery Phrase - SECURE MODE")
+        dialog.title("Wallet Recovery Phrase - SECURE MODE")
         dialog.geometry("600x700")
         dialog.resizable(False, False)
         dialog.transient(self.root)
@@ -963,19 +981,74 @@ class WalletsMixin:
         if not pwd:
             return
         
-        addr, mnemonic = Wallet.create(pwd)
+        try:
+            addr, mnemonic = Wallet.create(pwd)
+        except Exception as e:
+            log.exception("[create_wallet] Wallet creation failed")
+            messagebox.showerror("Failed", f"Wallet creation failed: {e}")
+            return
         Security.secure_erase(pwd)
         if not addr or not mnemonic:
             messagebox.showerror("Failed", "Wallet creation failed.")
             return
 
-        self.reload_addresses()
+        self._reg(addr)
+        self._wallets_after_change()
         self._toast("Wallet created", kind="info")
         try:
             self._show_mnemonic_dialog(addr, mnemonic)
         except Exception:
             log.exception("[create_wallet] Failed to show mnemonic dialog")
             messagebox.showinfo("Wallet Created", f"Address: {addr}\n\nSIMPAN recovery phrase dengan aman.")
+
+    def create_new_address(self) -> None:
+        pwd = None
+        try:
+            if self._ks_pwd_cache and time.time() < self._ks_pwd_cache[1]:
+                pwd = self._ks_pwd_cache[0]
+        except AttributeError:
+            pwd = None
+
+        if not pwd:
+            try:
+                ask = self._ask_password
+            except AttributeError:
+                ask = None
+            if callable(ask):
+                pwd = ask(TEXT_KEYSTORE_PWD, "Enter keystore password to create address:")
+            else:
+                pwd = simpledialog.askstring(TEXT_KEYSTORE_PWD, "Enter keystore password to create address:", show="*", parent=self.root)
+            if not pwd:
+                return
+
+        try:
+            addr, mnemonic = Wallet.create(pwd)
+        except Exception:
+            try:
+                self._ks_pwd_cache = None
+            except AttributeError:
+                pass
+            log.exception("[create_new_address] Failed to create address")
+            messagebox.showerror("Failed", "Incorrect keystore password or failed to create address.")
+            return
+
+        try:
+            self._ks_pwd_cache = (pwd, time.time() + 900)
+        except AttributeError:
+            pass
+        Security.secure_erase(pwd)
+        if not addr or not mnemonic:
+            messagebox.showerror("Failed", "Address creation failed.")
+            return
+
+        self._reg(addr)
+        self._wallets_after_change()
+        self._toast("Address created", kind="info")
+        try:
+            self._show_mnemonic_dialog(addr, mnemonic)
+        except Exception:
+            log.exception("[create_new_address] Failed to show mnemonic dialog")
+            messagebox.showinfo("Address Created", f"Address: {addr}\n\nSIMPAN recovery phrase dengan aman.")
 
 
     def load_wallet_file(self) -> None:

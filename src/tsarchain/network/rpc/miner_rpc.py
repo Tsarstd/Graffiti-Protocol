@@ -20,7 +20,11 @@ def _check_miner_rl(network: "Network", ip: str, endpoint: str, burst: int, wind
     rl_key = f"miner:{endpoint}:{ip}"
     if not network.tb_node_allow(network.rl_ip, rl_key, burst, window, burst, backoff_key=rl_key):
         network.backoff_node(rl_key, backoff)
-        return {"error": "rate_limited"}
+        return {
+            "type": "SYNC_REJECT",
+            "error": "rate_limited",
+            "retry_after": float(backoff),
+        }
     return None
 
 

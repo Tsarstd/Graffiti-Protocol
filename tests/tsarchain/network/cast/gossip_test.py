@@ -3,6 +3,7 @@
 # Part of TsarChain - see LICENSE
 
 import time
+import base64
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -122,7 +123,7 @@ def test_send_gossip(dummy_node):
 def test_broadcast_block(mock_block_class, dummy_node):
     mock_block = MagicMock()
     mock_block.hash.return_value.hex.return_value = "blockhash"
-    mock_block.to_dict.return_value = {"block_data": "data"}
+    mock_block.to_storage_bytes.return_value = b"binary_block_bytes"
     
     peers = {("127.0.0.1", 8333)}
     
@@ -132,6 +133,10 @@ def test_broadcast_block(mock_block_class, dummy_node):
     assert dummy_node.broadcast_block(mock_block, peers) == 1
     assert "blockhash" in dummy_node.seen_blocks
     mock_send_gossip.assert_called_once()
+    sent_msg = mock_send_gossip.call_args[0][1]
+    assert sent_msg["type"] == "NEW_BLOCK"
+    assert sent_msg["hash"] == "blockhash"
+    assert sent_msg["data"] == base64.b64encode(b"binary_block_bytes").decode("ascii")
     
     # 2. Seen block, not forced
     mock_send_gossip.reset_mock()

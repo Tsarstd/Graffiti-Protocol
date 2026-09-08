@@ -354,4 +354,8 @@ def test_tx_storage_bytes():
     assert restored_cb.reward == 5000000000
     assert "fee" not in restored_cb.to_dict()
     assert restored_cb.to_dict()["reward"] == 5000000000
+    assert restored_cb._cached_raw_tx_nowit is None
+    assert restored_cb._cached_raw_tx_w is None
+    assert restored_cb._cached_txid_bytes is None
+
 

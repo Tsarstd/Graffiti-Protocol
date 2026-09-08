@@ -30,6 +30,9 @@ class MockBlock:
     def to_dict(self):
         return {"height": self.height, "hash": self._hash}
 
+    def to_storage_bytes(self):
+        return f"raw_{self.height}_{self._hash}".encode("utf-8")
+
 
 class MockNode:
     def __init__(self):
@@ -205,21 +208,33 @@ def test_handle_get_headers_large_chain_performance(mock_cfg, mock_node):
 
 
 # -------------------------------------------------------------------
-# handle_get_blocks tests
+# handle_get_blocks tests (100% binary)
 # -------------------------------------------------------------------
 @patch("tsarchain.network.node_logic.handlers.CFG")
 def test_handle_get_blocks(mock_cfg, mock_node):
+    import base64
+    import struct
+
     mock_cfg.BLOCK_DOWNLOAD_BATCH_MAX = 5
     mock_cfg.DEBUG_BENCHMARKS = False
     
     msg = {"heights": [2, 4, 99, 10]}
     res = handle_get_blocks(mock_node, msg, ("192.168.1.10", 8334))
     
-    assert res["type"] == "BLOCKS"
-    assert len(res["blocks"]) == 3
-    assert res["blocks"][0]["hash"] == "hash2"
-    assert res["blocks"][1]["hash"] == "hash4"
-    assert res["blocks"][2]["hash"] == "hash10"
+    assert res["type"] == "BLOCKS_BIN"
+    assert res["count"] == 3
+    raw = base64.b64decode(res["data"])
+    offset = 0
+    extracted = []
+    while offset < len(raw):
+        (blen,) = struct.unpack_from("<I", raw, offset)
+        offset += 4
+        extracted.append(raw[offset : offset + blen])
+        offset += blen
+    assert len(extracted) == 3
+    assert extracted[0] == b"raw_2_hash2"
+    assert extracted[1] == b"raw_4_hash4"
+    assert extracted[2] == b"raw_10_hash10"
 
 
 # -------------------------------------------------------------------

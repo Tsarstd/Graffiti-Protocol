@@ -5,7 +5,8 @@
 
 from __future__ import annotations
 
-import json
+import base64
+import struct
 import time
 from typing import List
 
@@ -121,15 +122,21 @@ def handle_get_blocks(self, message, _):
         return {"type": "BLOCKS", "blocks": []}
 
     limit = min(len(heights), CFG.BLOCK_DOWNLOAD_BATCH_MAX)
-    blocks: List[dict] = []
+    chunks: List[bytes] = []
     with self.broadcast.lock:
         chain = self.broadcast.blockchain.chain
         for raw_h in heights[:limit]:
             h = int(raw_h)
             if 0 <= h < len(chain):
-                blocks.append(chain[h].to_dict())
-            
-    return {"type": "BLOCKS", "blocks": blocks}
+                raw = chain[h].to_storage_bytes()
+                chunks.append(struct.pack("<I", len(raw)) + raw)
+    
+    payload_bytes = b"".join(chunks)
+    return {
+        "type": "BLOCKS_BIN",
+        "count": len(chunks),
+        "data": base64.b64encode(payload_bytes).decode("ascii"),
+    }
 
 
 @benchmark(label="handle_get_block_at", threshold_ms=10.0)

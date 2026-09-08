@@ -171,3 +171,18 @@ def test_apps_web_server_main():
                 node_port=19001,
             )
 
+
+def test_handler_suppresses_abrupt_disconnect():
+    from unittest.mock import MagicMock
+    from http.server import BaseHTTPRequestHandler
+
+    handler_cls = create_handler_class(MagicMock())
+    handler = handler_cls.__new__(handler_cls)
+    with patch.object(BaseHTTPRequestHandler, "handle", side_effect=ConnectionResetError(104, "Connection reset by peer")):
+        handler.handle()
+    with patch.object(BaseHTTPRequestHandler, "handle", side_effect=BrokenPipeError(32, "Broken pipe")):
+        handler.handle()
+    with patch.object(BaseHTTPRequestHandler, "handle", side_effect=ConnectionAbortedError(103, "Connection aborted")):
+        handler.handle()
+
+

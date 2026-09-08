@@ -156,12 +156,7 @@ def decode_db_value(db_name: str, key_bytes: bytes, value_bytes: bytes) -> Union
 
     # 2. Chain binary decoding
     if db_name == 'chain' and key_str.startswith('h:'):
-        if Block:
-            try:
-                blk = Block.from_storage_bytes(value_bytes)
-                return blk.to_dict()
-            except Exception:
-                pass
+        return decode_chain_block(value_bytes)
 
     # 3. Mempool binary decoding
     if db_name == 'mempool' and len(value_bytes) >= 20 and not value_bytes.startswith(b'{'):
@@ -193,16 +188,66 @@ def decode_db_value(db_name: str, key_bytes: bytes, value_bytes: bytes) -> Union
     return decode_value(value_bytes)
 
 
-def stream_write_json(filepath: str, cursor, db_name: str = "") -> int:
+def decode_chain_block(value_bytes: bytes, cached_hash_hex: Optional[str] = None) -> Any:
+    if not Block:
+        return decode_value(value_bytes)
+    try:
+        blk = Block.from_storage_bytes(value_bytes)
+        if cached_hash_hex:
+            blk._cached_hash = bytes.fromhex(cached_hash_hex)
+            blk._cached_hash_nonce = blk.nonce
+            blk._cached_hash_bits = blk.bits
+            blk._cached_hash_mr = blk.merkle_root
+            blk._cached_hash_prev = blk.prev_block_hash
+        return blk.to_dict()
+    except Exception:
+        return decode_value(value_bytes)
+
+
+def iter_chain_entries(cursor, tip_hash: Optional[str] = None):
+    """
+    Streaming lookahead generator for chain blocks.
+    Propagates Block N hash from Block N+1 prev_block_hash (raw bytes 4..36)
+    and uses tip_hash for the latest block to eliminate RandomX PoW overhead.
+    """
+    prev_entry = None
+    for k_bytes, v_bytes in cursor:
+        k_str = decode_key(k_bytes)
+        if k_str == '__meta__':
+            try:
+                yield k_str, json.loads(v_bytes.decode('utf-8'))
+            except Exception:
+                yield k_str, v_bytes.decode('utf-8', errors='replace')
+            continue
+
+        if k_str.startswith('h:'):
+            if prev_entry is not None:
+                prev_k, prev_v = prev_entry
+                next_prev_hash = v_bytes[4:36].hex() if len(v_bytes) >= 36 else None
+                yield prev_k, decode_chain_block(prev_v, next_prev_hash)
+            prev_entry = (k_str, v_bytes)
+        else:
+            yield k_str, decode_value(v_bytes)
+
+    if prev_entry is not None:
+        prev_k, prev_v = prev_entry
+        yield prev_k, decode_chain_block(prev_v, tip_hash)
+
+
+def stream_write_json(filepath: str, items, db_name: str = "") -> int:
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
     count = 0
     with open(filepath, 'w', encoding='utf-8') as f:
         f.write('{\n')
         first = True
 
-        for key_bytes, value_bytes in tqdm(cursor, desc=f"Writing {os.path.basename(filepath)}", unit=" entries"):
-            key_str = decode_key(key_bytes)
-            val = decode_db_value(db_name, key_bytes, value_bytes)
+        for item in tqdm(items, desc=f"Writing {os.path.basename(filepath)}", unit=" entries"):
+            k, v = item
+            key_str = decode_key(k) if type(k) is bytes else k
+            if type(v) is bytes:
+                val = decode_db_value(db_name, k if type(k) is bytes else k.encode('utf-8'), v)
+            else:
+                val = v
 
             if not first:
                 f.write(',\n')
@@ -298,7 +343,7 @@ def sort_utxo_items(items):
             meta = (k, v)
         else:
             others.append((k, v))
-    others.sort(key=lambda x: (x[1].get('block_height', 0) if isinstance(x[1], dict) else 0))
+    others.sort(key=lambda x: (x[1].get('block_height', 0) if type(x[1]) is dict else 0))
     if meta:
         return [meta] + others
     return others
@@ -374,6 +419,24 @@ def export_node_data(target_dbs: Optional[set] = None) -> int:
             env.close()
             continue
 
+        # ---------- CHAIN (Fast Streaming with Hash Chaining) ----------
+        if db_name == 'chain':
+            output_file = os.path.join(NODE_OUTPUT_DIR, f"{db_name}.json")
+            with env.begin(db=dbi, write=False) as txn:
+                tip_hash = None
+                meta_raw = txn.get(b'__meta__')
+                if meta_raw:
+                    try:
+                        tip_hash = json.loads(meta_raw.decode('utf-8')).get('tip_hash')
+                    except Exception:
+                        pass
+                with txn.cursor() as cursor:
+                    count = stream_write_json(output_file, iter_chain_entries(cursor, tip_hash), db_name=db_name)
+                    print(f"   ✅ {count} entries streamed to {output_file}")
+                    total_entries += count
+            env.close()
+            continue
+
         # ---------- STREAMING ALL OTHER NODE DBS ----------
         output_file = os.path.join(NODE_OUTPUT_DIR, f"{db_name}.json")
         with env.begin(db=dbi, write=False) as txn:
@@ -393,7 +456,7 @@ def export_node_data(target_dbs: Optional[set] = None) -> int:
                 with open(utxo_file, 'r', encoding='utf-8') as f:
                     utxo_data = json.load(f)
 
-                if isinstance(utxo_data, dict):
+                if type(utxo_data) is dict:
                     items = list(utxo_data.items())
                     print(f"   📊 Sorting {len(items)} UTXO items...")
                     sorted_items = sort_utxo_items(items)

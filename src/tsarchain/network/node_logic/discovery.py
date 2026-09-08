@@ -141,8 +141,8 @@ def _attempt_hello(self, peer: Tuple[str, int]) -> bool:
                 
     except OSError:
         return False
-    except Exception:
-        log.exception("[_attempt_hello] Error dialing %s", norm)
+    except Exception as e:
+        log.debug("[_attempt_hello] Handshake failed dialing %s: %s", norm, e)
         return False
     finally:
         self._peer_last_dial[norm] = now

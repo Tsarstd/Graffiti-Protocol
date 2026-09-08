@@ -38,6 +38,17 @@ class Tx:
     inputs: list = []
     outputs: list = []
     fee: int | None = None
+    _cached_txid_bytes: bytes | None = None
+    _cached_raw_tx_nowit: bytes | None = None
+    _cached_raw_tx_w: bytes | None = None
+    _received_at: float | None = None
+    txid_hex: str | None = None
+    raw: bytes | None = None
+    size_bytes: int | None = None
+    to_address: str | None = None
+    block_id: str | None = None
+    height: int | None = None
+    reward: int | None = None
 
     def __init__(self, version: int = 1, locktime: int = 0, txid: bytes | None = None, is_coinbase: bool = False, inputs=None, outputs=None, auto_compute_txid: bool = True, to_address: str | None = None, block_id: str | None = None, height: int | None = None, reward: int | None = None):
         self.version = int(version)
@@ -278,6 +289,13 @@ class Tx:
             obj.height = h
             obj.fee = 0
             obj.txid = None
+            obj._cached_txid_bytes = None
+            obj._cached_raw_tx_nowit = None
+            obj._cached_raw_tx_w = None
+            obj._received_at = None
+            obj.txid_hex = None
+            obj.raw = None
+            obj.size_bytes = None
             obj.compute_txid()
             return obj
             

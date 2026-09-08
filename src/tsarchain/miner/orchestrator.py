@@ -319,6 +319,7 @@ class SimpleMiner:
             self.blockchain.register_tip_changed_callback(self._on_tip_changed)
             self.network = Network(blockchain=self.blockchain)
             self.network.start()
+            self.network.warmup_background()
             peer_count = _register_bootstrap_peers(self.network)
             clog(f"Node started with {peer_count} bootstrap peers")
             return True
@@ -588,6 +589,7 @@ class NodeRunner:
             
             self.network = Network(blockchain=self.blockchain)
             self.network.start()
+            self.network.warmup_background()
             peer_count = _register_bootstrap_peers(self.network)
             clog(f"Node online on port {self.network.port}, bootstrap peers: {peer_count}")
 

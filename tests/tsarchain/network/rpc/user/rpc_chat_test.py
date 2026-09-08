@@ -868,6 +868,29 @@ class TestChatPull:
         result = chat_pull(server, message, client_ip="ip")
         assert result == {"type": "CHAT_NONE", "items": [], "error": "ts_drift"}
 
+    def test_replay_detected(self, server, mock_time):
+        me = make_valid_address()
+        server.chat_spend_pub[me] = make_valid_spend_pub()
+        server.dedup_pull.return_value = True
+        message = {
+            "address": me,
+            "ts": int(mock_time.time.return_value),
+            "pull_sig": make_valid_sig(),
+        }
+        result = chat_pull(server, message, client_ip="ip")
+        assert result == {"type": "CHAT_NONE", "items": [], "error": "replay_detected"}
+
+    def test_not_registered_skips_dedup_check(self, server, mock_time):
+        me = make_valid_address()
+        message = {
+            "address": me,
+            "ts": int(mock_time.time.return_value),
+            "pull_sig": make_valid_sig(),
+        }
+        result = chat_pull(server, message, client_ip="ip")
+        assert result == {"type": "CHAT_NONE", "items": [], "error": "not_registered"}
+        server.dedup_pull.assert_not_called()
+
 
 class TestChatRelay:
     def test_success_last_hop(self, server, mock_config):

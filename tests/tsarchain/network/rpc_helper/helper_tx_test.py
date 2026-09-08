@@ -570,3 +570,24 @@ def test_deserialize_spk_hex(mixin):
 def test_deserialize_spk_hex_invalid(mixin):
     with pytest.raises(Exception):
         mixin._deserialize_spk_hex("invalidhex")
+
+
+def test_build_utxos_list_filters_mempool_spent(mixin):
+    """Test that UTXOs already spent in the mempool are excluded from spendable list."""
+    tip_height = 100
+    mixin.broadcast.blockchain.height = tip_height
+
+    utxos_map = {
+        "tx_spent:0": {"amount": 1000, "script_pubkey": b"spk1", "block_height": 50, "is_coinbase": False},
+        "tx_free:1": {"amount": 2000, "script_pubkey": b"spk2", "block_height": 60, "is_coinbase": False},
+    }
+
+    # Mock mempool where tx_spent:0 is marked spent
+    mock_mp = Mock()
+    mock_mp.is_prevout_spent.side_effect = lambda txid, vout: (txid == "tx_spent" and vout == 0)
+    mixin.broadcast.mempool = mock_mp
+
+    result = mixin._build_utxos_list(utxos_map, tip_height)
+    assert len(result) == 1
+    assert result[0]["txid"] == "tx_free"
+    assert result[0]["index"] == 1

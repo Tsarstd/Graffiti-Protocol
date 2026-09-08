@@ -438,6 +438,15 @@ class TestGetTxHistory:
             direction=None, status=None
         )
 
+    def test_since_height(self, mock_self, mock_pow_allow):
+        msg = {"address": "ts1addr", "limit": 20, "since_height": 500}
+        result = get_tx_history(mock_self, msg, None, None, client_ip="1.2.3.4")
+        mock_self.process_history_lookup.assert_called_with(
+            "ts1addr", limit=20, offset=0,
+            direction=None, status=None,
+            since_height=500
+        )
+
     def test_pow_failure(self, mock_self):
         with patch("tsarchain.network.rpc.user_rpc.category.explorer.CM.allow_rpc_with_pow") as mock:
             mock.return_value = (False, {"error": "pow"})

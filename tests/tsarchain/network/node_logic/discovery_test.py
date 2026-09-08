@@ -143,6 +143,28 @@ def test_attempt_hello_exception(mock_cfg, mock_socket, mock_node):
     assert peer in mock_node._peer_last_dial
 
 
+@patch("tsarchain.network.node_logic.discovery.socket.socket")
+@patch("tsarchain.network.node_logic.discovery.SecureChannel")
+@patch("tsarchain.network.node_logic.discovery.log")
+@patch("tsarchain.network.node_logic.discovery.CFG")
+def test_attempt_hello_handshake_value_error(mock_cfg, mock_log, mock_channel, mock_socket, mock_node):
+    mock_cfg.DISCOVERY_INTERVAL = 10.0
+    mock_cfg.HANDSHAKE_TIMEOUT = 5.0
+    mock_cfg.BUFFER_SIZE = 8192
+
+    mock_chan_inst = MagicMock()
+    mock_chan_inst.handshake.side_effect = ValueError("bad P2P handshake (HS2)")
+    mock_channel.return_value = mock_chan_inst
+
+    peer = ("127.0.0.1", 38172)
+    res = _attempt_hello(mock_node, peer)
+
+    assert res is False
+    assert peer in mock_node._peer_last_dial
+    mock_log.debug.assert_called_once()
+    mock_log.exception.assert_not_called()
+
+
 # ---------------------------------------------------------
 # _discover_peers tests
 # ---------------------------------------------------------

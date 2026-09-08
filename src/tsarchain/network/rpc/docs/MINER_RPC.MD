@@ -107,7 +107,7 @@ Retrieves internal metrics from the miner node (chain height, total blocks, memp
 ---
 
 ### 3. `NEW_BLOCK`
-Broadcasts a newly mined, validated block to the peer network.
+Broadcasts a newly mined, validated block to the peer network in pure binary format (`Block.to_storage_bytes()` encoded as base64 string). Legacy JSON dict payloads are strictly rejected.
 
 - **Category**: `MINER_RPC_TYPES` (Miner Only)
 - **Internal Handler**: `self.broadcast.receive_block()`
@@ -116,20 +116,12 @@ Broadcasts a newly mined, validated block to the peer network.
 ```json
 {
   "type": "NEW_BLOCK",
-  "data": {
-    "height": 1056,
-    "prev_block_hash": "00000000a1b2c3...",
-    "merkle_root": "e3b0c44298fc1c...",
-    "graffiti_merkle_root": "00000000000000...",
-    "state_root": "7f83b1657ff1fc...",
-    "timestamp": 1740000000,
-    "bits": 486604799,
-    "nonce": 12345678,
-    "transactions": [ ... ]
-  }
+  "data": "<base64_encoded_storage_bytes>",
+  "hash": "00000000a1b2c3d4e5f6...",
+  "port": 8333
 }
 ```
-*(Note: `receive_block` also accepts `"block"` as an alias for `"data"` for backwards compatibility).*
+*(Note: `data` contains the Base64 representation of `Block.to_storage_bytes()`. `hash` is an optional 64-char hex hint allowing receiving nodes to filter seen/inflight blocks immediately without deserializing payload).*
 
 #### Response Payload
 ```json
@@ -137,7 +129,7 @@ Broadcasts a newly mined, validated block to the peer network.
   "status": "ok"
 }
 ```
-*Error: Returns `{"error": "rate_limited"}` if block propagation frequency exceeds rate limits.*
+*Error: Returns `{"type": "SYNC_REJECT", "error": "rate_limited", "retry_after": 10.0}` if block propagation frequency exceeds rate limits.*
 
 ---
 
@@ -226,21 +218,17 @@ Downloads complete block data structures by a list of block heights.
   "heights": [1001, 1002, 1003]
 }
 ```
-*Note: Batch size is capped by `CFG.BLOCK_DOWNLOAD_BATCH_MAX`.*
+*Note: Batch size is capped by `CFG.BLOCK_DOWNLOAD_BATCH_MAX` (256).*
 
-#### Response Payload
+#### Response Payload (`BLOCKS_BIN`)
 ```json
 {
-  "type": "BLOCKS",
-  "blocks": [
-    {
-      "height": 1001,
-      "prev_block_hash": "...",
-      "transactions": [ ... ]
-    }
-  ]
+  "type": "BLOCKS_BIN",
+  "count": 3,
+  "data": "<base64_encoded_packed_storage_bytes>"
 }
 ```
+*Note: Data contains concatenated `[4-byte little-endian length] + [raw_storage_bytes]` frames decoded via `Block.from_storage_bytes()`.*
 
 ---
 

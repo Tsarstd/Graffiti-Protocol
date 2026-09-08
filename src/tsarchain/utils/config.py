@@ -382,7 +382,7 @@ STORAGE_PORT_RANGE_DEV  = (39200, 39209)
 STORAGE_PORT_RANGE_PROD = (41200, 41209)
 
 BOOTSTRAP_DEV = (
-    ("127.0.0.1", 38169),
+    ("38.253.224.105", 38169),
 ) # loopback bootstrap peers for development
 
 BOOTSTRAP_PROD = (
@@ -416,7 +416,7 @@ GOSSIP_CONN_TTL          = 10.0  # seconds a cached gossip socket stays valid be
 
 # ---- ANTI-DOS LIMITS ----
 MAX_ADDRS_PER_REQ              = 15  # max addresses accepted per addr message
-MAX_HISTORY_LIMIT              = 1500  # cap on stored addr history per peer
+MAX_HISTORY_LIMIT              = 10000  # cap on stored addr history per peer
 MAX_UTXO_ADDR_LEN              = 64  # sanity limit for UTXO address strings
 NONCE_PER_SENDER_MAX           = 256  # per-sender nonce cache bound
 NONCE_GLOBAL_MAX               = 100_000  # global nonce cache bound across senders
@@ -456,7 +456,7 @@ HEADERS_BATCH_MAX         = 4096  # number of headers requested per batch
 HEADERS_LOCATOR_DEPTH     = 64  # entries kept in locator list when syncing
 HEADERS_FANOUT            = 32  # peers to fan out header requests to
 HEADERS_SYNC_MIN_INTERVAL = 1  # seconds between header sync loops
-BLOCK_DOWNLOAD_BATCH_MAX  = 2048  # concurrent block download cap
+BLOCK_DOWNLOAD_BATCH_MAX  = 256   # concurrent block download cap
 
 
 # ---- PEER QUOTAS ----

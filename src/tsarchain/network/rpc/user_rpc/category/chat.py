@@ -531,11 +531,6 @@ def chat_pull(self, message, *,
         log.warning("[chat_pull] Timestamp drift error for %s (now=%d, ts=%d, ip=%s)", me, now, ts, client_ip)
         return {"type": "CHAT_NONE", "items": [], "error": "ts_drift"}
 
-    dedup = self.dedup_pull
-    if callable(dedup) and dedup(me, pull_sig):
-        log.warning("[chat_pull] Replay detected for %s from %s", me, client_ip)
-        return {"type": "CHAT_NONE", "items": [], "error": "replay_detected"}
-
     get_sp = self.get_spend_pub
     spend_pk = get_sp(me) if callable(get_sp) else self.chat_spend_pub.get(me)
     if not spend_pk:
@@ -546,6 +541,11 @@ def chat_pull(self, message, *,
     if not pull_check.get("pull"):
         log.warning("[chat_pull] Bad pull signature for %s (ip=%s)", me, client_ip)
         return {"type": "CHAT_NONE", "items": [], "error": "bad_sig"}
+
+    dedup = self.dedup_pull
+    if callable(dedup) and dedup(me, pull_sig):
+        log.warning("[chat_pull] Replay detected for %s from %s", me, client_ip)
+        return {"type": "CHAT_NONE", "items": [], "error": "replay_detected"}
 
     items = self.mailbox_pull(me, n)
     return {"type": "CHAT_ITEMS", "items": items}

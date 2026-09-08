@@ -41,8 +41,12 @@ class GuardHandler(NetworkHandlerProxy):
 
 
     def backoff_node(self, key, secs):
-        self.backoff_until[key] = max(self._tb_now() + secs, self.backoff_until.get(key, 0))
-        log.warning("[backoff_node] backoff set key=%s for %.2fs", key, secs)
+        now = self._tb_now()
+        target = now + secs
+        current = self.backoff_until.get(key, 0)
+        if target > current:
+            self.backoff_until[key] = target
+            log.warning("[backoff_node] backoff set key=%s for %.2fs", key, secs)
 
 
     def nonce_guard(self, scope: str, sender_key: str, nonce: str, ts: int | float, window: int) -> bool:

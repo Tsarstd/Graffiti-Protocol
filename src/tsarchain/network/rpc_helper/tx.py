@@ -27,6 +27,10 @@ class TxHandler(NetworkHandlerProxy):
         utxos_list = self._build_utxos_list(utxos_map, tip_height)
 
         if not utxos_list:
+            log.warning(
+                "[create_template_tx] Rejected tx for %s: no spendable utxos (balance exhausted or pending in mempool)",
+                from_addr,
+            )
             raise ValueError("no spendable utxos")
 
         from_spk = self.addr_to_spk(from_addr)
@@ -76,6 +80,10 @@ class TxHandler(NetworkHandlerProxy):
             preselected, pre_acc = self._process_forced_inputs(force_inputs, utxos_list, utxo_by_key, from_addr)
 
         if not utxos_list and not preselected:
+            log.warning(
+                "[create_template_tx_multi] Rejected tx for %s: no spendable utxos",
+                from_addr,
+            )
             raise ValueError("no spendable utxos")
             
         forced_keys = set(force_inputs or [])
@@ -132,8 +140,13 @@ class TxHandler(NetworkHandlerProxy):
 
     def _build_utxos_list(self, utxos_map, tip_height):
         utxos_list = []
+        mp = self.broadcast.mempool if self.broadcast else None
+        is_spent = mp.is_prevout_spent if mp else None
         for k, v in (utxos_map.items() if type(utxos_map) is dict else []):
             txid_hex, idx_str = k.split(":")
+            idx_int = int(idx_str)
+            if callable(is_spent) and is_spent(txid_hex, idx_int) is True:
+                continue
             is_cb = bool(v.get("is_coinbase", False))
             born  = int(v.get("block_height", 0))
             if is_cb:
@@ -196,6 +209,13 @@ class TxHandler(NetworkHandlerProxy):
                     change = 0
                 return selected, est_fee, change
 
+        log.warning(
+            "[select_utxos] Insufficient funds: available=%d sats, needed=%d sats (target=%d, fee=%d)",
+            acc,
+            target_amount_sat + est_fee,
+            target_amount_sat,
+            est_fee,
+        )
         raise ValueError(f"insufficient funds: have={acc}, need={target_amount_sat + est_fee}")
 
 
@@ -368,6 +388,13 @@ class TxHandler(NetworkHandlerProxy):
                     break
 
             if not candidates:
+                log.warning(
+                    "[accumulate_utxos_multi] Insufficient funds: available=%d sats, needed=%d sats (target=%d, fee=%d)",
+                    acc,
+                    total_target + fee_est,
+                    total_target,
+                    fee_est,
+                )
                 raise ValueError(f"insufficient funds: have={acc}, need={total_target + fee_est}")
             selected.append(candidates.pop(0))
             acc += int(selected[-1]["amount"])

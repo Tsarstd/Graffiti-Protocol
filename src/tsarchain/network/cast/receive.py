@@ -4,6 +4,7 @@
 # Refs: see REFERENCES.md
 
 import time
+import base64
 from typing import Any, Dict, Set, Tuple
 
 from ...core.tx import Tx
@@ -25,18 +26,28 @@ class ReceiveHandler(BroadcastHandlerProxy):
         inflight = False
         accepted = False
         try:
+            msg_hash = message.get("hash")
+            if type(msg_hash) is str and len(msg_hash) == 64:
+                with self.lock:
+                    if msg_hash in self.seen_blocks or msg_hash in self._processing_blocks:
+                        return True
+
             block_data = message.get("data") or message.get("block")
-            if not block_data or type(block_data) is not dict:
+            if not block_data:
                 return False
 
-            block = Block.from_dict(block_data)
-            block_id = None
-            blk_hash_field = block_data.get("hash")
-            if blk_hash_field and type(blk_hash_field) is str and len(blk_hash_field) >= 64:
-                block_id = blk_hash_field
+            if type(block_data) is Block:
+                block = block_data
+            elif type(block_data) is str:
+                raw_bytes = base64.b64decode(block_data)
+                block = Block.from_storage_bytes(raw_bytes)
+            elif type(block_data) is bytes:
+                block = Block.from_storage_bytes(block_data)
             else:
-                log.exception("[receive_block]")
-                block_id = block.hash().hex()
+                log.warning("[receive_block] Unsupported block data format: %s (legacy JSON rejected)", type(block_data))
+                return False
+
+            block_id = block.hash().hex()
 
             origin_port = message.get("port")
             origin = (addr[0], origin_port) if origin_port else None

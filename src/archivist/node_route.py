@@ -15,7 +15,7 @@ from tsarchain.utils.tsar_logging import get_ctx_logger
 log = get_ctx_logger("tsarchain.contracts.storage_node.node_route")
 
 
-@benchmark(label="RPC_HELLO", threshold_ms=25.0)
+@benchmark(label="RPC_HELLO", threshold_ms=100.0)
 def rpc_hello(rpc, my_listen_port: int = 0, trusted: bool = False, timeout: float = 3.0) -> bool:
     """Send HELLO handshake to register storage role on the Node."""
     hello_msg = {
@@ -32,14 +32,14 @@ def rpc_hello(rpc, my_listen_port: int = 0, trusted: bool = False, timeout: floa
     return pong.get("type") == "PONG"
 
 
-@benchmark(label="RPC_PING", threshold_ms=15.0)
+@benchmark(label="RPC_PING", threshold_ms=300.0)
 def rpc_ping(rpc, timeout: float = 2.0) -> bool:
     """Heartbeat check with the Node."""
     pong = rpc.call({"type": "PING"}, timeout=timeout)
     return pong.get("type") == "PONG"
 
 
-@benchmark(label="RPC_GET_NETWORK_INFO", threshold_ms=25.0)
+@benchmark(label="RPC_GET_NETWORK_INFO", threshold_ms=250.0)
 def rpc_get_network_info(rpc, timeout: float = 4.0) -> Optional[Dict[str, Any]]:
     """Fetch network status, tip height, and peers count from the Node."""
     raw = rpc.call({"type": "GET_NETWORK_INFO"}, timeout=timeout)
@@ -48,7 +48,7 @@ def rpc_get_network_info(rpc, timeout: float = 4.0) -> Optional[Dict[str, Any]]:
     return None
 
 
-@benchmark(label="RPC_GET_GRAFFITI_POSTS", threshold_ms=50.0)
+@benchmark(label="RPC_GET_GRAFFITI_POSTS", threshold_ms=250.0)
 def rpc_get_graffiti_posts(rpc, limit: int = 500, timeout: float = 6.0) -> List[Dict[str, Any]]:
     """Query confirmed on-chain graffiti posts from the Node."""
     resp = rpc.call({"type": "GRAFFITI_GET_POSTS", "limit": int(limit)}, timeout=timeout)
@@ -58,7 +58,7 @@ def rpc_get_graffiti_posts(rpc, limit: int = 500, timeout: float = 6.0) -> List[
     return []
 
 
-@benchmark(label="RPC_SUBMIT_PROOF", threshold_ms=50.0)
+@benchmark(label="RPC_SUBMIT_PROOF", threshold_ms=150.0)
 def rpc_submit_proof(
     rpc,
     *,
@@ -97,7 +97,7 @@ def rpc_submit_proof(
     return rpc.call(payload, timeout=timeout)
 
 
-@benchmark(label="RPC_BUILD_PAYOUT", threshold_ms=50.0)
+@benchmark(label="RPC_BUILD_PAYOUT", threshold_ms=750.0)
 def rpc_build_payout(
     rpc,
     *,

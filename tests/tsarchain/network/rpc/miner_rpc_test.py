@@ -45,6 +45,7 @@ def mock_config():
 def network():
     net = MagicMock()
     net.rl_ip = {}
+    net.backoff_until = {}
     net.tb_node_allow.return_value = True
     net._nonce_guard.return_value = True
     
@@ -83,7 +84,7 @@ def test_hello(mock_handle_hello, network):
     # Rate limited
     network.tb_node_allow.return_value = False
     res2 = handle_miner_rpc(network, {"test": 1}, ("127.0.0.1", 1234), "HELLO")
-    assert res2 == {"error": "rate_limited"}
+    assert res2 == {"type": "SYNC_REJECT", "error": "rate_limited", "retry_after": 10.0}
 
 
 def test_new_block(network, mock_config):
@@ -101,7 +102,7 @@ def test_new_block(network, mock_config):
     # Rate limited
     network.tb_node_allow.return_value = False
     res3 = handle_miner_rpc(network, {"block": 1}, ("127.0.0.1", 1234), "NEW_BLOCK")
-    assert res3 == {"error": "rate_limited"}
+    assert res3 == {"type": "SYNC_REJECT", "error": "rate_limited", "retry_after": 10.0}
     network.backoff_node.assert_called_once()
 
 
@@ -121,7 +122,7 @@ def test_get_block_hash(network, mock_config):
     # Rate limited
     network.tb_node_allow.return_value = False
     res2 = handle_miner_rpc(network, {"height": 10}, ("127.0.0.1", 1234), "GET_BLOCK_HASH")
-    assert res2 == {"error": "rate_limited"}
+    assert res2 == {"type": "SYNC_REJECT", "error": "rate_limited", "retry_after": 10.0}
 
 
 def test_get_info(network, mock_config):
@@ -136,7 +137,7 @@ def test_get_info(network, mock_config):
     # Rate limited
     network.tb_node_allow.return_value = False
     res2 = handle_miner_rpc(network, {}, ("127.0.0.1", 1234), "GET_INFO")
-    assert res2 == {"error": "rate_limited"}
+    assert res2 == {"type": "SYNC_REJECT", "error": "rate_limited", "retry_after": 10.0}
 
 
 @patch("tsarchain.network.rpc.miner_rpc.handlers.handle_get_headers")
@@ -148,7 +149,7 @@ def test_get_headers(mock_handler, network):
     # Rate limited
     network.tb_node_allow.return_value = False
     res2 = handle_miner_rpc(network, {}, ("127.0.0.1", 1234), "GET_HEADERS")
-    assert res2 == {"error": "rate_limited"}
+    assert res2 == {"type": "SYNC_REJECT", "error": "rate_limited", "retry_after": 10.0}
 
 
 @patch("tsarchain.network.rpc.miner_rpc.handlers.handle_get_blocks")
@@ -160,7 +161,7 @@ def test_get_blocks(mock_handler, network):
     # Rate limited
     network.tb_node_allow.return_value = False
     res2 = handle_miner_rpc(network, {}, ("127.0.0.1", 1234), "GET_BLOCKS")
-    assert res2 == {"error": "rate_limited"}
+    assert res2 == {"type": "SYNC_REJECT", "error": "rate_limited", "retry_after": 10.0}
 
 
 def test_mempool(network, mock_config):
@@ -171,4 +172,4 @@ def test_mempool(network, mock_config):
     # Rate limited
     network.tb_node_allow.return_value = False
     res2 = handle_miner_rpc(network, {}, ("127.0.0.1", 1234), "MEMPOOL")
-    assert res2 == {"error": "rate_limited"}
+    assert res2 == {"type": "SYNC_REJECT", "error": "rate_limited", "retry_after": 10.0}

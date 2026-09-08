@@ -503,3 +503,112 @@ def test_rpc_graffiti_media_meta_and_chunk(mock_client):
         assert res2["status"] == "ok"
         assert res2["data_b64"] == "abc"
 
+
+def test_rpc_address_two_tier_fast_path(mock_client):
+    vol = {
+        "spendable": 500, "immature": 0, "outgoing": 0, "incoming": 0,
+        "balance": 500, "utxo_count": 3,
+        "unconfirmed_items": [{"txid": "unconf1", "status": "unconfirmed"}],
+        "height": 100
+    }
+    hist = {
+        "last_synced_height": 100,
+        "items": [{"txid": "conf1", "status": "confirmed", "height": 95}],
+        "total": 1
+    }
+    def mock_cache_get(key, **kwargs):
+        if "addr_vol" in key:
+            return vol
+        if "addr_hist" in key:
+            return hist
+        return None
+
+    with patch("web.Backend.src.core.logic_web.rpc_client.cache_get", side_effect=mock_cache_get):
+        with patch("web.Backend.src.core.logic_web.rpc_client.rpc_send") as mock_send:
+            res = rpc_handlers.rpc_address(mock_client, "addr_fast")
+            assert mock_send.call_count == 0  # Zero RPC calls on fast path!
+            assert res["spendable"] == 500
+            assert res["total_txs"] == 2
+            assert len(res["history"]) == 2
+            # Check dynamic confirmations
+            assert res["history"][0]["txid"] == "unconf1"
+            assert res["history"][0]["confirmations"] == 0
+            assert res["history"][1]["txid"] == "conf1"
+            assert res["history"][1]["confirmations"] == 6  # 100 - 95 + 1
+
+
+def test_rpc_address_delta_same_height(mock_client):
+    hist = {
+        "last_synced_height": 100,
+        "items": [{"txid": "conf1", "status": "confirmed", "height": 98}],
+        "total": 1
+    }
+    def mock_cache_get(key, **kwargs):
+        if "addr_hist" in key:
+            return hist
+        return None
+
+    sent_payloads = []
+    def mock_send(c, p):
+        sent_payloads.append(p)
+        if p["type"] == "GET_BALANCES":
+            return {"height": 100, "items": {"addr_same": {"spendable": 200}}}
+        elif p["type"] == "GET_TOTAL_UTXO":
+            return {"count": 2}
+        elif p["type"] == "GET_TX_HISTORY":
+            assert p.get("status") == "unconfirmed"
+            return {"height": 100, "items": [], "total": 0}
+
+    with patch("web.Backend.src.core.logic_web.rpc_client.cache_get", side_effect=mock_cache_get):
+        with patch("web.Backend.src.core.logic_web.rpc_client.cache_set"):
+            with patch("web.Backend.src.core.logic_web.rpc_client.rpc_send", side_effect=mock_send):
+                res = rpc_handlers.rpc_address(mock_client, "addr_same")
+                assert res["spendable"] == 200
+                assert res["total_txs"] == 1
+                assert res["history"][0]["txid"] == "conf1"
+                assert res["history"][0]["confirmations"] == 3  # 100 - 98 + 1
+                # Confirm we only asked for unconfirmed mempool txs!
+                tx_hist_reqs = [p for p in sent_payloads if p.get("type") == "GET_TX_HISTORY"]
+                assert len(tx_hist_reqs) == 1
+                assert tx_hist_reqs[0].get("status") == "unconfirmed"
+
+
+def test_rpc_address_delta_new_blocks(mock_client):
+    hist = {
+        "last_synced_height": 100,
+        "items": [{"txid": "conf1", "status": "confirmed", "height": 98}],
+        "total": 1
+    }
+    def mock_cache_get(key, **kwargs):
+        if "addr_hist" in key:
+            return hist
+        return None
+
+    sent_payloads = []
+    def mock_send(c, p):
+        sent_payloads.append(p)
+        if p["type"] == "GET_BALANCES":
+            return {"height": 102, "items": {"addr_new": {"spendable": 300}}}
+        elif p["type"] == "GET_TOTAL_UTXO":
+            return {"count": 3}
+        elif p["type"] == "GET_TX_HISTORY":
+            assert p.get("since_height") == 100
+            return {
+                "height": 102,
+                "items": [{"txid": "conf2", "status": "confirmed", "height": 101}],
+                "total": 1
+            }
+
+    with patch("web.Backend.src.core.logic_web.rpc_client.cache_get", side_effect=mock_cache_get):
+        with patch("web.Backend.src.core.logic_web.rpc_client.cache_set") as mock_set:
+            with patch("web.Backend.src.core.logic_web.rpc_client.rpc_send", side_effect=mock_send):
+                res = rpc_handlers.rpc_address(mock_client, "addr_new")
+                assert res["spendable"] == 300
+                assert res["total_txs"] == 2
+                assert len(res["history"]) == 2
+                assert res["history"][0]["txid"] == "conf2"
+                assert res["history"][0]["confirmations"] == 2  # 102 - 101 + 1
+                assert res["history"][1]["txid"] == "conf1"
+                assert res["history"][1]["confirmations"] == 5  # 102 - 98 + 1
+
+

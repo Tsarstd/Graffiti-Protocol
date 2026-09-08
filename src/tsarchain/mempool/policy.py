@@ -23,6 +23,10 @@ class MempoolPolicyMixin:
     def _prevout_key(self, txid, vout) -> PrevoutRef | None:
         return PrevoutRef.from_values(txid, vout)
 
+    def is_prevout_spent(self, txid, vout) -> bool:
+        key = self._prevout_key(txid, vout)
+        return bool(key and key in self._prevout_index)
+
     def _index_tx_prevouts(self, tx_obj: Tx) -> None:
         if tx_obj.is_coinbase:
             return
