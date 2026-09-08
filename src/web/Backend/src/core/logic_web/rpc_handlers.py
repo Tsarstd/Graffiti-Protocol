@@ -275,9 +275,10 @@ def rpc_address(client, addr: str):
     
     synced_h = cached_hist.get("last_synced_height") if (cached_hist and type(cached_hist) is dict) else None
     
+    hist_limit = int(CFG.MAX_HISTORY_LIMIT)
     if synced_h is None:
-        # First time fetch: query full history (limit 200)
-        fut_history = _EXECUTOR.submit(rpc_client.rpc_send, client, {"type": "GET_TX_HISTORY", "address": addr_norm, "limit": 200})
+        # First time fetch: query full history up to MAX_HISTORY_LIMIT
+        fut_history = _EXECUTOR.submit(rpc_client.rpc_send, client, {"type": "GET_TX_HISTORY", "address": addr_norm, "limit": hist_limit})
         balances = fut_balances.result() or {}
         utxos = fut_utxos.result() or {}
         history = fut_history.result() or {}
@@ -294,10 +295,10 @@ def rpc_address(client, addr: str):
             history = rpc_client.rpc_send(client, {"type": "GET_TX_HISTORY", "address": addr_norm, "status": "unconfirmed", "limit": 50}) or {}
         elif tip_h is not None and tip_h > synced_h:
             # ponytail: height advanced, fetch only delta txs since synced_h
-            history = rpc_client.rpc_send(client, {"type": "GET_TX_HISTORY", "address": addr_norm, "since_height": synced_h, "limit": 200}) or {}
+            history = rpc_client.rpc_send(client, {"type": "GET_TX_HISTORY", "address": addr_norm, "since_height": synced_h, "limit": hist_limit}) or {}
         else:
             # Reorg or height reset: full re-fetch
-            history = rpc_client.rpc_send(client, {"type": "GET_TX_HISTORY", "address": addr_norm, "limit": 200}) or {}
+            history = rpc_client.rpc_send(client, {"type": "GET_TX_HISTORY", "address": addr_norm, "limit": hist_limit}) or {}
             
     balance_info = balances.get("items", {}).get(addr_norm, {}) if balances else {}
     tip_height = history.get("height") or balances.get("height")
@@ -399,9 +400,6 @@ def _assemble_address_response(addr_norm: str, vol: dict, hist: dict, tip_height
         else:
             it_copy["confirmations"] = 0
         merged_history.append(it_copy)
-        
-    if len(merged_history) > 200:
-        merged_history = merged_history[:200]
         
     total_txs = len(unconfirmed_items) + int(hist.get("total", len(confirmed_items)) if hist else 0)
     

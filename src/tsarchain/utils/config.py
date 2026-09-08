@@ -416,7 +416,7 @@ GOSSIP_CONN_TTL          = 10.0  # seconds a cached gossip socket stays valid be
 
 # ---- ANTI-DOS LIMITS ----
 MAX_ADDRS_PER_REQ              = 15  # max addresses accepted per addr message
-MAX_HISTORY_LIMIT              = 1500  # cap on stored addr history per peer
+MAX_HISTORY_LIMIT              = 10000  # cap on stored addr history per peer
 MAX_UTXO_ADDR_LEN              = 64  # sanity limit for UTXO address strings
 NONCE_PER_SENDER_MAX           = 256  # per-sender nonce cache bound
 NONCE_GLOBAL_MAX               = 100_000  # global nonce cache bound across senders
