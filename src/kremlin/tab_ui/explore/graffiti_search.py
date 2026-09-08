@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import os
-import fitz
+import pymupdf as fitz
 import threading
 import tkinter as tk
 

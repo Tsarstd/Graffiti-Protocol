@@ -198,6 +198,9 @@ class KremlinWalletGUI(WalletsMixin):
         self.theme_set = get_theme(self.current_theme or "dark")
         self._set_theme_vars(self.theme_set)
 
+    def _toast(self, text: str, ms: int = 1800, kind: str = "info") -> None:
+        show_toast(self, text, ms=ms, kind=kind)
+
 
     def _init_core_ui(self) -> None:
         self._build_layout()

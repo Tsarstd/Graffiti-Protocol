@@ -14,7 +14,7 @@ from tkinter import messagebox, scrolledtext, Toplevel, filedialog, simpledialog
 
 # ---------------- Local Project (Wallet Only) ----------------
 from ..theme import FONT
-from ..ui_utils import center_window
+from ..ui_utils import center_window, show_toast
 from ..services.tx_history import HistoryService
 from ..security.data_security import (
     Wallet,
@@ -314,6 +314,9 @@ class WalletController:
 # ---------------- Wallets Mixin ----------------
 class WalletsMixin:
     
+    def _toast(self, text: str, ms: int = 1800, kind: str = "info") -> None:
+        show_toast(self, text, ms=ms, kind=kind)
+
     def _build_wallets_frame(self) -> None:
         
         self.wallet_controller = WalletController(self)
@@ -443,6 +446,7 @@ class WalletsMixin:
             )
             mm = tk.Menu(action_btn, tearoff=False)
             mm.add_command(label="See Private Key", command=lambda a=addr: self._menu_show_priv(a))
+            mm.add_command(label="See 12 Seeds Phrase", command=lambda a=addr: self._menu_show_mnemonic(a))
             mm.add_separator()
             mm.add_command(label=TEXT_DELETE_ADDRESS, command=lambda a=addr: self._menu_delete_addr(a))
             action_btn["menu"] = mm
@@ -476,7 +480,7 @@ class WalletsMixin:
 
         d = tk.Toplevel(self.root); d.title("Private Key"); d.configure(bg=self.bg); d.resizable(False, False)
         tk.Label(d, text=addr, bg=self.bg, fg=self.muted, font=("Consolas", 9)).pack(padx=14, pady=(12,0))
-        v = tk.StringVar(value="*" * len(priv))
+        v = tk.StringVar(d, value="*" * len(priv))
         shown = {"v": False}
         box = tk.Frame(d, bg=self.bg); box.pack(padx=14, pady=10)
         ent = tk.Entry(box, textvariable=v, width=68, bg=self.panel_bg, fg=self.fg, insertbackground=self.fg, relief="flat")
@@ -489,6 +493,43 @@ class WalletsMixin:
         btn.pack(side=tk.LEFT, padx=6)
         def copy():
             self.root.clipboard_clear(); self.root.clipboard_append(priv)
+            self._toast("Copied to clipboard", kind="info")
+        center_window(d, self.root)
+        tk.Button(d, text="Copy", command=copy, bg=self.accent, fg="#fff", bd=0).pack(pady=(0,12))
+
+    def _menu_show_mnemonic(self, addr: str) -> None:
+        pwd = self._ask_password("Unlock Address", f"Input Password For\n{addr}:")
+        if not pwd:
+            return
+        try:
+            w = Wallet.unlock(pwd, addr)
+        except Exception:
+            messagebox.showerror("Error", "Failed to unlock address. Incorrect password?")
+            return
+        phrase = w.get("mnemonic") or ""
+        if not phrase:
+            messagebox.showwarning(
+                "Not available",
+                "12 seeds phrase not found for this address.\n"
+                "(Addresses imported via private key do not have a seed phrase.)"
+            )
+            return
+
+        d = tk.Toplevel(self.root); d.title("12 Seeds Phrase"); d.configure(bg=self.bg); d.resizable(False, False)
+        tk.Label(d, text=addr, bg=self.bg, fg=self.muted, font=("Consolas", 9)).pack(padx=14, pady=(12,0))
+        v = tk.StringVar(d, value="*" * len(phrase))
+        shown = {"v": False}
+        box = tk.Frame(d, bg=self.bg); box.pack(padx=14, pady=10)
+        ent = tk.Entry(box, textvariable=v, width=68, bg=self.panel_bg, fg=self.fg, insertbackground=self.fg, relief="flat")
+        ent.pack(side=tk.LEFT)
+        def toggle():
+            shown["v"] = not shown["v"]
+            v.set(phrase if shown["v"] else ("*" * len(phrase)))
+            btn.config(text=("🙈" if shown["v"] else "👁"))
+        btn = tk.Button(box, text="👁", command=toggle, bg=self.panel_bg, fg=self.fg, bd=0)
+        btn.pack(side=tk.LEFT, padx=6)
+        def copy():
+            self.root.clipboard_clear(); self.root.clipboard_append(phrase)
             self._toast("Copied to clipboard", kind="info")
         center_window(d, self.root)
         tk.Button(d, text="Copy", command=copy, bg=self.accent, fg="#fff", bd=0).pack(pady=(0,12))

@@ -407,3 +407,84 @@ def test_create_wallet_handles_failure():
 
         mock_error.assert_called_once()
 
+
+def test_mnemonic_storage_and_unlock_real_keystore(tmp_path):
+    with patch("kremlin.security.data_security.WALLET_FILE", str(tmp_path / "wallet.enc")):
+        pwd = "StrongPass123!@#"
+        addr, mnemonic = data_security.Wallet.create(pwd)
+        assert addr is not None
+        assert len(mnemonic.split()) == 12
+
+        unlocked = data_security.Wallet.unlock(pwd, addr)
+        assert unlocked["address"] == addr
+        assert unlocked["mnemonic"] == mnemonic
+
+        # Test create from mnemonic
+        mnemo_phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        addr2 = data_security.Wallet.create_from_mnemonic(mnemo_phrase, pwd)
+        unlocked2 = data_security.Wallet.unlock(pwd, addr2)
+        assert unlocked2["mnemonic"] == mnemo_phrase
+
+        # Test create from private key hex (no mnemonic)
+        priv = "01" * 32
+        addr3 = data_security.Wallet.create_from_privkey_hex(priv, pwd)
+        unlocked3 = data_security.Wallet.unlock(pwd, addr3)
+        assert unlocked3["mnemonic"] == ""
+
+
+def test_toast_methods():
+    from kremlin.tab_ui.wallet_tab import WalletsMixin
+    with patch("kremlin.tab_ui.wallet_tab.show_toast") as mock_show_toast:
+        tab = WalletsMixin()
+        tab._toast("Test toast", ms=1200, kind="info")
+        mock_show_toast.assert_called_once_with(tab, "Test toast", ms=1200, kind="info")
+
+    from apps.wallet import KremlinWalletGUI
+    with patch("apps.wallet.show_toast") as mock_wallet_toast:
+        dummy_app = KremlinWalletGUI.__new__(KremlinWalletGUI)
+        dummy_app._toast("App toast", ms=1500, kind="warn")
+        mock_wallet_toast.assert_called_once_with(dummy_app, "App toast", ms=1500, kind="warn")
+
+
+def test_menu_show_mnemonic_success():
+    from kremlin.tab_ui.wallet_tab import WalletsMixin
+    class DummyWalletTab(WalletsMixin):
+        def __init__(self):
+            self.root = MagicMock()
+            self.bg = "#000"
+            self.panel_bg = "#111"
+            self.fg = "#fff"
+            self.muted = "#888"
+            self.accent = "#f00"
+            self._ask_password = MagicMock(return_value="pwd")
+
+    tab = DummyWalletTab()
+    with patch("kremlin.tab_ui.wallet_tab.Wallet.unlock") as mock_unlock, \
+         patch("kremlin.tab_ui.wallet_tab.tk.Toplevel") as mock_toplevel, \
+         patch("kremlin.tab_ui.wallet_tab.tk.StringVar"), \
+         patch("kremlin.tab_ui.wallet_tab.center_window"):
+        mock_unlock.return_value = {"mnemonic": "word " * 12, "private_key": "01"*32}
+        mock_dlg = MagicMock()
+        mock_toplevel.return_value = mock_dlg
+        tab._menu_show_mnemonic("tsar1test")
+
+        mock_unlock.assert_called_once_with("pwd", "tsar1test")
+        mock_toplevel.assert_called_once()
+
+
+def test_menu_show_mnemonic_not_available():
+    from kremlin.tab_ui.wallet_tab import WalletsMixin
+    class DummyWalletTab(WalletsMixin):
+        def __init__(self):
+            self.root = MagicMock()
+            self._ask_password = MagicMock(return_value="pwd")
+
+    tab = DummyWalletTab()
+    with patch("kremlin.tab_ui.wallet_tab.Wallet.unlock") as mock_unlock, \
+         patch("kremlin.tab_ui.wallet_tab.messagebox.showwarning") as mock_warn:
+        mock_unlock.return_value = {"mnemonic": "", "private_key": "01"*32}
+        tab._menu_show_mnemonic("tsar1test")
+
+        mock_unlock.assert_called_once_with("pwd", "tsar1test")
+        mock_warn.assert_called_once()
+
