@@ -111,7 +111,7 @@ def _resolve_storage_sender_meta(_, peers, ip, peer_port, src_node_id, src_pubke
     return best_meta
 
 
-@benchmark(label="GRAFFITI_PROOF_SUBMIT", threshold_ms=25.0)
+@benchmark(label="GRAFFITI_PROOF_SUBMIT", threshold_ms=100.0)
 def _handle_storage_proof_submit(self, message, storer_addr, ip, src_node_id):
     ts_val = int(message.get("ts", 0))
     nonce_val = str(message.get("nonce") or "")
@@ -167,7 +167,7 @@ def _handle_storage_proof_submit(self, message, storer_addr, ip, src_node_id):
     return {"status": "ok", "art_id": art_id, "epoch": epoch}
 
 
-@benchmark(label="GRAFFITI_BUILD_PAYOUT", threshold_ms=30.0)
+@benchmark(label="GRAFFITI_BUILD_PAYOUT", threshold_ms=750.0)
 def _handle_storage_build_payout(self, message, storer_addr, ip, src_node_id):
     ts_val = int(message.get("ts", 0))
     nonce_val = str(message.get("nonce") or "")

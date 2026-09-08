@@ -7,6 +7,8 @@ from __future__ import annotations
 import os
 import time
 import base64
+import collections
+import threading
 from typing import Any, Callable, Dict, Optional, Tuple, List
 
 from tsarchain.utils import config as CFG
@@ -18,6 +20,14 @@ from web.Backend.src.core.logic_web import db_cache
 
 from tsarchain.utils.tsar_logging import get_ctx_logger
 log = get_ctx_logger("tsarchain.web.Backend.src.core.logic_web.db_media")
+
+_CHUNK_CACHE: collections.OrderedDict[str, dict] = collections.OrderedDict()
+_CHUNK_CACHE_LOCK = threading.RLock()
+_MAX_CHUNK_CACHE_ENTRIES = 128
+
+_META_CACHE: collections.OrderedDict[str, dict] = collections.OrderedDict()
+_META_CACHE_LOCK = threading.RLock()
+_MAX_META_CACHE_ENTRIES = 256
 
 
 def get_graffiti_media_meta(
@@ -33,6 +43,12 @@ def get_graffiti_media_meta(
     art_norm = _sanitize_art_id(art_id)
     if not art_norm:
         return {"status": "error", "reason": "missing_art_id"}
+
+    with _META_CACHE_LOCK:
+        mem_cached = _META_CACHE.get(art_norm)
+        if mem_cached is not None:
+            _META_CACHE.move_to_end(art_norm)
+            return mem_cached
 
     cached = _get_cached_graffiti_file(art_norm, cache_dir)
     if cached is not None and cached.get("status") == "ok":
@@ -76,13 +92,18 @@ def get_graffiti_media_meta(
             meta_info = meta_resp.get("meta") or {}
             total_size = _extract_total_size(meta_info)
 
-            return {
+            res_meta = {
                 "status": "ok",
                 "cached": False,
                 "graffiti_id": gid,
                 "meta": meta_info,
                 "size_bytes": total_size,
             }
+            with _META_CACHE_LOCK:
+                _META_CACHE[art_norm] = res_meta
+                if len(_META_CACHE) > _MAX_META_CACHE_ENTRIES:
+                    _META_CACHE.popitem(last=False)
+            return res_meta
         except Exception:
             last_error = "io_error"
             continue
@@ -107,6 +128,13 @@ def fetch_graffiti_chunk(
 
     offset = max(0, int(offset or 0))
     length = max(1024, min(int(length or CFG.GRAFFITI_CHUNK_BYTES), CFG.GRAFFITI_CHUNK_BYTES))
+
+    chunk_key = f"{art_norm}:{offset}:{length}"
+    with _CHUNK_CACHE_LOCK:
+        mem_chunk = _CHUNK_CACHE.get(chunk_key)
+        if mem_chunk is not None:
+            _CHUNK_CACHE.move_to_end(chunk_key)
+            return mem_chunk
 
     candidates = _get_ordered_storers(
         rpc_call, storer_addr=storer_addr, cache_scope=cache_scope, stor_list_ttl_sec=stor_list_ttl_sec
@@ -148,7 +176,7 @@ def fetch_graffiti_chunk(
             resp_offset = int(resp.get("offset") if resp.get("offset") is not None else offset)
             resp_length = int(resp.get("length") if resp.get("length") is not None else 0)
 
-            return {
+            res_chunk = {
                 "status": "ok",
                 "data_b64": data_b64,
                 "offset": resp_offset,
@@ -157,6 +185,11 @@ def fetch_graffiti_chunk(
                 "eof": eof,
                 "meta": resp.get("meta") or {},
             }
+            with _CHUNK_CACHE_LOCK:
+                _CHUNK_CACHE[chunk_key] = res_chunk
+                if len(_CHUNK_CACHE) > _MAX_CHUNK_CACHE_ENTRIES:
+                    _CHUNK_CACHE.popitem(last=False)
+            return res_chunk
         except Exception:
             last_error = "io_error"
             continue

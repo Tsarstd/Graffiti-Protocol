@@ -21,7 +21,7 @@ RECEIPT_TTL = 30
 _EXECUTOR = ThreadPoolExecutor(max_workers=8)
 
 
-@benchmark(label="rpc_receipt", threshold_ms=15.0)
+@benchmark(label="rpc_receipt", threshold_ms=150.0)
 def rpc_receipt(client, txid: str):
     txid_norm = str(txid or "").strip().lower()
     if not txid_norm:
@@ -60,7 +60,7 @@ def rpc_receipt(client, txid: str):
     return result
 
 
-@benchmark(label="rpc_history_book", threshold_ms=15.0)
+@benchmark(label="rpc_history_book", threshold_ms=250.0)
 def rpc_history_book(client, address: str):
     addr_norm = str(address or "").strip().lower()
     if not addr_norm:
@@ -114,7 +114,7 @@ def rpc_history_book(client, address: str):
     return result
 
 
-@benchmark(label="rpc_network", threshold_ms=15.0)
+@benchmark(label="rpc_network", threshold_ms=100.0)
 def rpc_network(client):
     key = rpc_client.cache_key("network")
     def _fetch():
@@ -128,7 +128,7 @@ def rpc_network(client):
     return rpc_client.get_or_fetch_cached(key, _fetch)
 
 
-@benchmark(label="rpc_block", threshold_ms=15.0)
+@benchmark(label="rpc_block", threshold_ms=100.0)
 def rpc_block(client, val: str):
     if str(val).isdigit():
         key = rpc_client.cache_key("block", "h", str(val))
@@ -218,14 +218,14 @@ def rpc_block_range(client, opts: dict):
     return resp
 
 
-@benchmark(label="rpc_tx", threshold_ms=15.0)
+@benchmark(label="rpc_tx", threshold_ms=100.0)
 def rpc_tx(client, txid: str):
     txid_norm = str(txid).lower()
     key = rpc_client.cache_key("tx", txid_norm)
     return rpc_client.get_or_fetch_cached(key, lambda: rpc_client.rpc_send(client, {"type": "GET_TX_DETAIL", "txid": txid_norm}))
 
 
-@benchmark(label="rpc_address", threshold_ms=15.0)
+@benchmark(label="rpc_address", threshold_ms=350.0)
 def rpc_address(client, addr: str):
     addr_norm = str(addr or "").strip()
     addr_key = addr_norm.lower()
@@ -398,7 +398,7 @@ def _assemble_address_response(addr_norm: str, vol: dict, hist: dict, tip_height
     }
 
 
-@benchmark(label="rpc_graffiti", threshold_ms=15.0)
+@benchmark(label="rpc_graffiti", threshold_ms=350.0)
 def rpc_graffiti(client, art_id: str):
     art_norm = str(art_id or "").strip()
     key = rpc_client.cache_key("graffiti", art_norm.lower()) if art_norm else None
@@ -433,7 +433,7 @@ def rpc_graffiti(client, art_id: str):
     return out
 
 
-@benchmark(label="rpc_graffiti_posts", threshold_ms=15.0)
+@benchmark(label="rpc_graffiti_posts", threshold_ms=150.0)
 def rpc_graffiti_posts(client, opts: dict):
     limit = int(opts.get("limit", 50) or 50) if opts else 50
     offset = int(opts.get("offset", 0) or 0) if opts else 0

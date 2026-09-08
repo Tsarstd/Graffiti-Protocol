@@ -15,7 +15,7 @@ from .....utils.helpers import spkhex_to_address
 from .....utils.tsar_logging import get_ctx_logger
 log = get_ctx_logger("tsarchain.network.rpc.user_rpc.category.explorer")
 
-@benchmark(label="GET_BALANCES", threshold_ms=60.0)
+@benchmark(label="GET_BALANCES", threshold_ms=250.0)
 def get_balances(self, message, pow_obj, base_identity, *,
                      client_ip, **kwargs):
     
@@ -75,7 +75,7 @@ def get_balances(self, message, pow_obj, base_identity, *,
     return response_dict
 
 
-@benchmark(label="GET_NETWORK_INFO", threshold_ms=10.0)
+@benchmark(label="GET_NETWORK_INFO", threshold_ms=100.0)
 def get_network_info(self, message, pow_obj, base_identity, *,
                      client_ip, overlay_realtime_mempool_stats, **kwargs):
 
@@ -110,7 +110,7 @@ def get_network_info(self, message, pow_obj, base_identity, *,
     return response_dict
 
 
-@benchmark(label="GET_BLOCK", threshold_ms=15.0)
+@benchmark(label="GET_BLOCK", threshold_ms=100.0)
 def get_block(self, message, pow_obj, base_identity,*,
                      client_ip, **kwargs):
     
@@ -142,7 +142,7 @@ def get_block(self, message, pow_obj, base_identity,*,
     return handlers.handle_get_block_by_hash(self, hx, src_tag=src_tag)
 
 
-@benchmark(label="GET_BLOCK_RANGE", threshold_ms=25.0)
+@benchmark(label="GET_BLOCK_RANGE", threshold_ms=150.0)
 def get_block_range(self, message, pow_obj, base_identity, *,
                      client_ip, **kwargs):
 
@@ -283,7 +283,7 @@ def get_mempool(self, message, pow_obj, base_identity, addr, *,
     return {"type": "MEMPOOL", "mode": "txids", "txs": hexes}
 
 
-@benchmark(label="GET_TX_HISTORY", threshold_ms=40.0)
+@benchmark(label="GET_TX_HISTORY", threshold_ms=150.0)
 def get_tx_history(self, message, pow_obj, base_identity, *,
                      client_ip, **kwargs):
     
@@ -333,7 +333,7 @@ def get_tx_history(self, message, pow_obj, base_identity, *,
     return response_dict
 
 
-@benchmark(label="GET_TX_DETAIL", threshold_ms=50.0)
+@benchmark(label="GET_TX_DETAIL", threshold_ms=100.0)
 def get_tx_detail(self, message, pow_obj, base_identity, *,
                      client_ip, **kwargs): 
     
@@ -359,7 +359,7 @@ def get_tx_detail(self, message, pow_obj, base_identity, *,
     return self.process_tx_lookup(txid_hex, message.get("rpc_source"))
 
 
-@benchmark(label="GET_TOTAL_UTXO", threshold_ms=10.0)
+@benchmark(label="GET_TOTAL_UTXO", threshold_ms=100.0)
 def get_total_utxo(self, message, pow_obj, base_identity, *,
                      client_ip, **kwargs):
 

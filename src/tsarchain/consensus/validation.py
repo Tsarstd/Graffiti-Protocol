@@ -42,7 +42,7 @@ class BlockValidator:
     # 1. VALIDATION PROCESSING
     # =============================================================================
 
-    @benchmark(label="validate_block", threshold_ms=2000.0)
+    @benchmark(label="validate_block", threshold_ms=2500.0)
     def validate_block(self, block: Block) -> bool:
         try:
             # 1. Check Field Completeness

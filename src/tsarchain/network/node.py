@@ -184,6 +184,36 @@ class Network(NetworkProxy):
         self.sync_thread = threading.Thread(target=sync.sync_loop, args=(self,), daemon=True)
         self._threads = [self.server_thread, self.discovery_thread, self.sync_thread]
 
+    def _warmup_background(self) -> None:
+        try:
+            bc = self.broadcast.blockchain if self.broadcast else None
+            if not bc:
+                return
+            tip_h = int(bc.height or 0)
+            if tip_h >= 0:
+                val = bc.validator
+                if val:
+                    val._ensure_warm(tip_h)
+                    val._warm_pow_context(tip_h)
+
+                utxo = self.broadcast.utxodb if self.broadcast else None
+                if utxo:
+                    with utxo._lock:
+                        utxo._ensure_index_locked()
+
+                hist = self.history_handler
+                if hist and bc.chain:
+                    opmap = hist.build_outpoint_map(bc.chain)
+                    hist._sync_index_to_tip(bc.chain, tip_h, opmap)
+
+                log.info("[warmup] Startup pre-warming completed for height=%d", tip_h)
+        except Exception:
+            log.debug("[warmup] Startup pre-warming skipped", exc_info=True)
+
+    def warmup_background(self) -> None:
+        """Starts a background thread to pre-warm RandomX context and chain indexes."""
+        threading.Thread(target=self._warmup_background, name="node-warmup", daemon=True).start()
+
     def start(self) -> None:
         """Starts background network threads and performs initial RPC prefetching."""
         try:

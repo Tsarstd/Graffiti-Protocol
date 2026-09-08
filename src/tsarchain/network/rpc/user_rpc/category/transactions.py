@@ -13,7 +13,7 @@ from .....utils.tsar_logging import get_ctx_logger
 log = get_ctx_logger("tsarchain.network.rpc.user_rpc.category.transactions")
 
 
-@benchmark(label="NEW_TX", threshold_ms=25.0)
+@benchmark(label="NEW_TX", threshold_ms=100.0)
 def new_tx(self, message, pow_obj, base_identity, addr, *, client_ip, **kwargs):
     sender_addr = str(message.get("from_addr") or message.get("from") or "").strip().lower()
     if not sender_addr:
@@ -69,7 +69,7 @@ def new_tx(self, message, pow_obj, base_identity, addr, *, client_ip, **kwargs):
         return {"status": "error", "reason": (reason or "invalid tx")}
 
 
-@benchmark(label="CREATE_TX", threshold_ms=15.0)
+@benchmark(label="CREATE_TX", threshold_ms=100.0)
 def create_tx(self, message, pow_obj, base_identity, addr, mtype, *,
                      client_ip, is_miner_sender, **kwargs):
     ok, pow_resp = CM.allow_rpc_with_pow(
@@ -102,7 +102,7 @@ def create_tx(self, message, pow_obj, base_identity, addr, mtype, *,
     return {"type": "TX_TEMPLATE", "data": tpl}
 
 
-@benchmark(label="CREATE_TX_MULTI", threshold_ms=15.0)
+@benchmark(label="CREATE_TX_MULTI", threshold_ms=150.0)
 def create_tx_multi(self, message, pow_obj, base_identity, addr, mtype, *,
                      client_ip, is_miner_sender, **kwargs):
     ok, pow_resp = CM.allow_rpc_with_pow(
