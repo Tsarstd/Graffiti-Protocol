@@ -7,6 +7,7 @@ import sys
 import json
 import base64
 import urllib.parse
+import contextlib
 from http.server import BaseHTTPRequestHandler
 from typing import Dict, Any, Optional
 
@@ -43,6 +44,10 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
 
         def log_message(self, format_str: str, *args: Any) -> None:
             log.debug("%s - - [%s] %s", self.address_string(), self.log_date_time_string(), format_str % args)
+
+        def handle(self) -> None:
+            with contextlib.suppress(ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+                super().handle()
 
 
         def do_OPTIONS(self) -> None:

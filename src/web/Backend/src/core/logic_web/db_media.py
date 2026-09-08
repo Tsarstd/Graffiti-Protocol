@@ -521,7 +521,7 @@ def _get_cached_graffiti_file(art_id: str, cache_dir: Optional[str]) -> Optional
     expected_size = entry.get("size")
     if cache_path and expected_size is not None:
         if os.path.isfile(cache_path) and os.path.getsize(cache_path) == expected_size:
-            log.info("[webdb] ok(cache_disk_hit) art=%s path=%s", art_id[:16], cache_path)
+            log.debug("[webdb] ok(cache_disk_hit) art=%s path=%s", art_id[:16], cache_path)
             return {"status": "ok", "meta": entry.get("meta") or {}, "cache_path": cache_path}
 
     data_raw = store.get_bytes(db_cache.WEB_MEDIA_DB, _media_data_key(art_id))
@@ -579,5 +579,5 @@ def _do_oneshot_fetch(
     meta_out = resp.get("meta") or meta_info
     cache_path = _write_cache_file(cache_root, art_norm, meta_out, raw)
     _cache_media_success(art_norm, meta_out, cache_path, len(raw), ttl_sec=0)
-    log.info("[webdb] ok(%s) art=%s host=%s bytes=%s cache=%s", log_tag, art_norm[:16], host, len(raw), True)
+    log.debug("[webdb] ok(%s) art=%s host=%s bytes=%s cache=%s", log_tag, art_norm[:16], host, len(raw), True)
     return {"status": "ok", "meta": meta_out, "cache_path": cache_path}
