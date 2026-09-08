@@ -2,16 +2,20 @@
 # Copyright (c) 2025 Tsar Studio
 # Part of TsarChain — see LICENSE
 
+import io
 import json
 import time
 import socket
 import base64
+import contextlib
 import threading
 import urllib.request
 import urllib.error
 from http.server import ThreadingHTTPServer
 from unittest.mock import patch
+from PIL import Image as PILImage
 
+import web.Backend.src.server as server_mod
 from web.Backend.src.server import create_handler_class
 from web.Backend.src.services.explorer_service import ExplorerService
 from web.Backend.src.routes.explorer_routes import ExplorerRoutes
@@ -23,7 +27,7 @@ def _find_free_port():
         return s.getsockname()[1]
 
 
-def test_server_http_endpoints_and_streaming():
+def test_server_api_routes():
     port = _find_free_port()
     svc = ExplorerService("127.0.0.1", 19000)
     routes = ExplorerRoutes(svc, "127.0.0.1", 19000)
@@ -147,9 +151,68 @@ def test_server_http_endpoints_and_streaming():
                     assert body == chunk_data
                     assert resp.headers.get("Content-Range") == f"bytes 0-{len(chunk_data)-1}/{len(chunk_data)}"
 
+        # 15. GET /api/graffiti/:artId/thumbnail - dynamic thumbnail generation
+        img_byte_arr = io.BytesIO()
+        test_img = PILImage.new("RGB", (200, 200), color="red")
+        test_img.save(img_byte_arr, format="JPEG")
+        test_img_bytes = img_byte_arr.getvalue()
+
+        with patch.object(svc, "get_graffiti_media_meta", return_value={"status": "ok", "meta": {"size": len(test_img_bytes), "mime": "image/jpeg"}}):
+            with patch.object(server_mod, "find_cached_file", return_value=None):
+                with patch.object(svc, "get_graffiti_chunk", return_value={"status": "ok", "data_b64": base64.b64encode(test_img_bytes).decode("ascii"), "eof": True}):
+                    req_thumb = urllib.request.Request(f"{base_url}/api/graffiti/{art_id}/thumbnail")
+                    with urllib.request.urlopen(req_thumb) as resp:
+                        assert resp.status == 200
+                        assert resp.headers.get("Content-Type") == "image/jpeg"
+                        assert "max-age=31536000" in resp.headers.get("Cache-Control", "")
+                        body = resp.read()
+                        assert len(body) > 0
+                        # Verify decoded thumbnail dimensions <= 128
+                        thumb_pil = PILImage.open(io.BytesIO(body))
+                        assert thumb_pil.size[0] <= 128 and thumb_pil.size[1] <= 128
+
+        # 15b. Cache hit & HEAD on thumbnail
+        req_thumb_cached = urllib.request.Request(f"{base_url}/api/graffiti/{art_id}/thumbnail")
+        with urllib.request.urlopen(req_thumb_cached) as resp:
+            assert resp.status == 200
+            assert resp.headers.get("Content-Type") == "image/jpeg"
+            assert "max-age=31536000" in resp.headers.get("Cache-Control", "")
+
+        req_thumb_head = urllib.request.Request(f"{base_url}/api/graffiti/{art_id}/thumbnail", method="HEAD")
+        with urllib.request.urlopen(req_thumb_head) as resp:
+            assert resp.status == 200
+            assert resp.headers.get("Content-Type") == "image/jpeg"
+            assert len(resp.read()) == 0
+
+        # 15c. Invalid art_id & 404 media_not_found
+        req_bad = urllib.request.Request(f"{base_url}/api/graffiti/invalid_art/thumbnail")
+        try:
+            urllib.request.urlopen(req_bad)
+            assert False, "Should have 400"
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+
+        art_id_404 = "graf" + "1" * 60
+        with patch.object(svc, "get_graffiti_media_meta", return_value={"status": "error"}):
+            with patch.object(server_mod, "find_cached_file", return_value=None):
+                with patch.object(svc, "get_graffiti_media_info", return_value=None):
+                    with patch.object(svc, "get_graffiti_chunk", return_value={"status": "error"}):
+                        req_404_thumb = urllib.request.Request(f"{base_url}/api/graffiti/{art_id_404}/thumbnail")
+                        try:
+                            urllib.request.urlopen(req_404_thumb)
+                            assert False, "Should have 404"
+                        except urllib.error.HTTPError as e:
+                            assert e.code == 404
+
     finally:
         httpd.shutdown()
         httpd.server_close()
+        import os
+        from web.Backend.src.routes.explorer_routes import CACHE_DIR
+        test_thumb_file = os.path.join(CACHE_DIR, "thumbnails", f"{art_id}.jpg")
+        if os.path.isfile(test_thumb_file):
+            with contextlib.suppress(OSError):
+                os.remove(test_thumb_file)
 
 
 def test_create_handler_class_default_cfg():
