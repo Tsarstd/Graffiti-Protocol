@@ -320,3 +320,90 @@ def test_add_privkey_real_keystore(tmp_path):
         
         addrs = data_security.list_addresses_in_keystore("pwd")
         assert addr in addrs
+
+
+def test_create_new_address_with_cached_password():
+    from kremlin.tab_ui.wallet_tab import WalletsMixin
+    class DummyWalletTab(WalletsMixin):
+        def __init__(self):
+            self.wallets = ["tsar1existing"]
+            self.root = MagicMock()
+            self._ks_pwd_cache = ("TestPass123!", 9999999999.0)
+            self._toast = MagicMock()
+            self._show_mnemonic_dialog = MagicMock()
+            self._wallets_update_mode = MagicMock()
+            self._notify_balance_refresh = MagicMock()
+            self.reload_addresses = MagicMock()
+            self._render_wallet_list = MagicMock()
+
+    with patch("kremlin.tab_ui.wallet_tab.Wallet.create") as mock_create, \
+         patch("kremlin.tab_ui.wallet_tab.save_registry"):
+        mock_create.return_value = ("tsar1newaddr", "word " * 12)
+        tab = DummyWalletTab()
+        tab.create_new_address()
+
+        mock_create.assert_called_once_with("TestPass123!")
+        assert "tsar1newaddr" in tab.wallets
+        tab._toast.assert_called_once_with("Address created", kind="info")
+        tab._show_mnemonic_dialog.assert_called_once_with("tsar1newaddr", "word " * 12)
+
+
+def test_create_new_address_wrong_password():
+    from kremlin.tab_ui.wallet_tab import WalletsMixin
+    class DummyWalletTab(WalletsMixin):
+        def __init__(self):
+            self.wallets = ["tsar1existing"]
+            self.root = MagicMock()
+            self._ks_pwd_cache = None
+            self._toast = MagicMock()
+            self._show_mnemonic_dialog = MagicMock()
+            self._wallets_update_mode = MagicMock()
+            self._notify_balance_refresh = MagicMock()
+            self.reload_addresses = MagicMock()
+            self._render_wallet_list = MagicMock()
+
+    with patch("kremlin.tab_ui.wallet_tab.Wallet.create") as mock_create, \
+         patch("kremlin.tab_ui.wallet_tab.messagebox.showerror") as mock_error:
+        mock_create.side_effect = ValueError("Invalid password or corrupted data")
+        tab = DummyWalletTab()
+        tab._ask_password = MagicMock(return_value="WrongPass!")
+
+        tab.create_new_address()
+
+        assert tab._ks_pwd_cache is None
+        mock_error.assert_called_once()
+        assert "tsar1newaddr" not in tab.wallets
+
+
+def test_create_wallet_handles_failure():
+    from kremlin.tab_ui.wallet_tab import WalletsMixin
+    class DummyWalletTab(WalletsMixin):
+        def __init__(self):
+            self.wallets = []
+            self.root = MagicMock()
+            self.bg = "#000"
+            self.panel_bg = "#111"
+            self.fg = "#fff"
+            self.muted = "#888"
+            self.accent = "#f00"
+            self._ks_pwd_cache = None
+            self._toast = MagicMock()
+            self._show_mnemonic_dialog = MagicMock()
+            self._wallets_update_mode = MagicMock()
+            self._notify_balance_refresh = MagicMock()
+            self.reload_addresses = MagicMock()
+            self._render_wallet_list = MagicMock()
+
+    with patch("kremlin.tab_ui.wallet_tab.CreateWalletDialog") as mock_dlg_cls, \
+         patch("kremlin.tab_ui.wallet_tab.Wallet.create") as mock_create, \
+         patch("kremlin.tab_ui.wallet_tab.messagebox.showerror") as mock_error:
+        mock_dlg = MagicMock()
+        mock_dlg.result_password = "BadPassword"
+        mock_dlg_cls.return_value = mock_dlg
+        mock_create.side_effect = ValueError("Weak password")
+
+        tab = DummyWalletTab()
+        tab.create_wallet()
+
+        mock_error.assert_called_once()
+
