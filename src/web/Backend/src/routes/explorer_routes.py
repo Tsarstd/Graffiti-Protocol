@@ -21,10 +21,10 @@ _CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.abspath(os.path.join(_CURRENT_DIR, "..", "..", "..", ".."))
 CACHE_DIR = os.path.abspath(os.path.join(_PROJECT_ROOT, "data", "web", "graffiti_cache"))
 
-GRAFFITI_CACHE_TTL_SEC = 6 * 60 * 60
-GRAFFITI_CACHE_SWEEP_SEC = 15 * 60
-STREAM_THRESHOLD_BYTES = 10 * 1024 * 1024
-STREAM_CHUNK_BYTES = 4 * 1024 * 1024
+GRAFFITI_CACHE_TTL_SEC = 6 * 60 * 60    # 6 hours TTL for server disk cache
+GRAFFITI_CACHE_SWEEP_SEC = 15 * 60      # 15 minutes sweep interval
+STREAM_THRESHOLD_BYTES = 10 * 1024 * 1024  # 10 MB threshold: files < 10MB cached to disk, >= 10MB streamed
+STREAM_CHUNK_BYTES = 4 * 1024 * 1024    # 4 MB chunk size for on-demand streaming
 
 _last_graffiti_cache_sweep = 0.0
 _cache_sweep_lock = threading.Lock()

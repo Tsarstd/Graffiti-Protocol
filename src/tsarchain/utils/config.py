@@ -698,9 +698,9 @@ STOR_COMMIT_RL_IP_BURST    = 6   # STOR_COMMIT per IP burst
 STOR_COMMIT_RL_WINDOW_S    = 20  # seconds window for commit limiter
 STOR_COMMIT_RL_BACKOFF_S   = 15  # backoff after commit limiter trips
 
-STOR_GET_RL_IP_BURST       = 10  # STOR_GET_BY_ART per IP burst
+STOR_GET_RL_IP_BURST       = 40  # STOR_GET_BY_ART per IP burst (tuned for video streaming and range requests)
 STOR_GET_RL_WINDOW_S       = 10  # seconds window for get limiter
-STOR_GET_RL_BACKOFF_S      = 10  # backoff after get limiter trips
+STOR_GET_RL_BACKOFF_S      = 2   # backoff after get limiter trips (fast recovery)
 
 STOR_POW_DIFFICULTY        = 20  # difficulty bits for PoW challenge on storage RPC
 

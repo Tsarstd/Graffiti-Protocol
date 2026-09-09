@@ -36,7 +36,8 @@ log = get_ctx_logger("tsarchain.web.Backend.server")
 # Rate limiters
 api_limiter = RateLimiter(window_ms=60 * 1000, max_requests=120)
 search_limiter = RateLimiter(window_ms=60 * 1000, max_requests=20)
-graffiti_media_limiter = RateLimiter(window_ms=60 * 1000, max_requests=40)
+graffiti_media_limiter = RateLimiter(window_ms=60 * 1000, max_requests=120)
+graffiti_thumbnail_limiter = RateLimiter(window_ms=60 * 1000, max_requests=180)
 
 
 def create_handler_class(routes: Optional[ExplorerRoutes] = None):
@@ -182,9 +183,9 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
 
             # 9b. Graffiti Thumbnail /api/graffiti/:artId/thumbnail
             if path.startswith("/api/graffiti/") and path.endswith("/thumbnail"):
-                media_ok, media_hdrs, media_retry = graffiti_media_limiter.check(client_ip)
-                if not media_ok:
-                    self._send_json(429, {"error": "rate_limited", "retry_after": media_retry}, media_hdrs, is_head=is_head)
+                thumb_ok, thumb_hdrs, thumb_retry = graffiti_thumbnail_limiter.check(client_ip)
+                if not thumb_ok:
+                    self._send_json(429, {"error": "rate_limited", "retry_after": thumb_retry}, thumb_hdrs, is_head=is_head)
                     return
                 art_id = urllib.parse.unquote(path[14:-10])
                 self._serve_graffiti_thumbnail(art_id, is_head=is_head)
