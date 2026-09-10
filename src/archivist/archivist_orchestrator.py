@@ -488,13 +488,24 @@ class ArchivistOrchestrator:
             path=mpath,
             timeout=8.0,
         )
-        try:
-            if ack.get("status") == "ok":
-                self._log(f"[proof] submitted epoch {proof_epoch} for {art_id[:12]}...")
-            else:
-                self._log(f"[proof] submit failed: {ack}")
-        except AttributeError:
+        ok_ack = bool(ack and isinstance(ack, dict) and ack.get("status") == "ok")
+        if ok_ack:
+            self._log(f"[proof] submitted epoch {proof_epoch} for {art_id[:12]}...")
+        else:
+            reason = str((ack or {}).get("error") if isinstance(ack, dict) else ack) or "submit_failed"
             self._log(f"[proof] submit failed: {ack}")
+            if self._server and hasattr(self._server, "index") and isinstance(self._server.index, dict):
+                files = self._server.index.get("files") or {}
+                if gid in files:
+                    fmeta = files[gid]
+                    fmeta["last_proof_epoch"] = last_epoch
+                    fmeta["proof_status"] = "error"
+                    fmeta["proof_fail_reason"] = reason
+                    if hasattr(self._server, "_normalize_file_meta"):
+                        fmeta = self._server._normalize_file_meta(gid, fmeta)
+                    self._server.index["files"][gid] = fmeta
+                    if hasattr(self._server, "_save_index"):
+                        self._server._save_index()
 
     def _heartbeat_loop(self) -> None:
         while not self._stop.is_set():

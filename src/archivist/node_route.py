@@ -89,9 +89,9 @@ def rpc_submit_proof(
         "ts": int(time.time()),
         "nonce": secrets.token_hex(16),
     }
-    if chunk:
+    if chunk is not None:
         payload["chunk"] = chunk
-    if path:
+    if path is not None:
         payload["path"] = path
 
     return rpc.call(payload, timeout=timeout)

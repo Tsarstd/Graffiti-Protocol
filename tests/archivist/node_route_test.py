@@ -95,6 +95,29 @@ def test_rpc_submit_proof(mock_rpc):
     assert sent_payload["epoch"] == 2
     assert sent_payload["chunk"] == "chunk_b64"
     assert sent_payload["storer"] == "tsar1mockaddress"
+    assert sent_payload["path"] == ["path_elem"]
+
+
+def test_rpc_submit_proof_single_chunk_empty_path(mock_rpc):
+    mock_rpc.call.return_value = {"status": "ok", "art_id": "art_single", "epoch": 5}
+    res = rpc_submit_proof(
+        mock_rpc,
+        art_id="art_single",
+        epoch=5,
+        offset=0,
+        length=10201,
+        proof_hash="hash_single",
+        height=50,
+        seed="seed_single",
+        chunk="chunk_b64",
+        path=[],
+    )
+    assert res["status"] == "ok"
+    sent_payload = mock_rpc.call.call_args[0][0]
+    assert sent_payload["type"] == "GRAFFITI_PROOF_SUBMIT"
+    assert sent_payload["art_id"] == "art_single"
+    assert sent_payload["path"] == []
+    assert type(sent_payload["path"]) is list
 
 
 def test_rpc_build_payout(mock_rpc):

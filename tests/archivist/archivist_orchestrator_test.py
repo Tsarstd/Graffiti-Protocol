@@ -224,6 +224,46 @@ def test_run_retention_proofs(mock_orchestrator):
         }, timeout=8.0)
 
 
+def test_run_retention_proofs_failure_rollback(mock_orchestrator):
+    mock_orchestrator.connected = True
+    files = {
+        "gid1": {
+            "art_id": "art1",
+            "paid": True,
+            "state": "stored",
+            "last_proof_epoch": 5,
+            "proof_status": "ok",
+        }
+    }
+    idx = {"files": files}
+    mock_orchestrator._server.index = {"files": {"gid1": dict(files["gid1"])}}
+    mock_orchestrator._server._normalize_file_meta = lambda gid, m: m
+    mock_orchestrator._server._save_index = MagicMock()
+    tip_height = 100
+
+    with patch("archivist.archivist_orchestrator.GRAFFITI") as mock_graf:
+        mock_graf.compute_proof_epoch.return_value = 10
+        mock_orchestrator._server.generate_retention_proof.return_value = {
+            "status": "ok",
+            "epoch": 10,
+            "offset": 0,
+            "length": 1024,
+            "hash": "h",
+            "seed": "s",
+        }
+        # Simulate node error
+        mock_orchestrator.rpc.call.return_value = {"error": "merkle_path_required"}
+
+        mock_orchestrator._run_retention_proofs(idx, tip_height)
+
+        # Meta should be rolled back to last_epoch (5), not remain 10
+        fmeta = mock_orchestrator._server.index["files"]["gid1"]
+        assert fmeta["last_proof_epoch"] == 5
+        assert fmeta["proof_status"] == "error"
+        assert fmeta["proof_fail_reason"] == "merkle_path_required"
+        mock_orchestrator._server._save_index.assert_called()
+
+
 def test_start_stop(mock_orchestrator):
     with patch.object(mock_orchestrator, "connect", return_value=True), \
          patch("archivist.archivist_orchestrator.threading.Thread") as mock_thread:
