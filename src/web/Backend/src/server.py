@@ -11,11 +11,14 @@ import contextlib
 from http.server import BaseHTTPRequestHandler
 from typing import Dict, Any, Optional
 
+from PIL import Image as PILImage
+
 from tsarchain.utils import config as CFG
 from web.Backend.src.utils.rate_limit import RateLimiter
 from web.Backend.src.routes.health import handle_health
 from web.Backend.src.routes.explorer_routes import (
     ExplorerRoutes,
+    CACHE_DIR,
     is_art_id,
     touch_file,
     cleanup_graffiti_cache,
@@ -33,7 +36,8 @@ log = get_ctx_logger("tsarchain.web.Backend.server")
 # Rate limiters
 api_limiter = RateLimiter(window_ms=60 * 1000, max_requests=120)
 search_limiter = RateLimiter(window_ms=60 * 1000, max_requests=20)
-graffiti_media_limiter = RateLimiter(window_ms=60 * 1000, max_requests=40)
+graffiti_media_limiter = RateLimiter(window_ms=60 * 1000, max_requests=120)
+graffiti_thumbnail_limiter = RateLimiter(window_ms=60 * 1000, max_requests=180)
 
 
 def create_handler_class(routes: Optional[ExplorerRoutes] = None):
@@ -61,7 +65,7 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
             try:
                 self._handle_get(is_head=True)
             except Exception as exc:
-                log.exception("[unhandled_server_error_head]")
+                log.exception("[unhandled_server_error_head] : %s", exc)
                 self.send_response(500)
                 self._set_cors_headers()
                 self.end_headers()
@@ -71,7 +75,7 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
             try:
                 self._handle_get(is_head=False)
             except Exception as exc:
-                log.exception("[unhandled_server_error]")
+                log.exception("[unhandled_server_error] : %s", exc)
                 self._send_json(500, {"error": "internal_error", "detail": str(exc)})
 
 
@@ -175,6 +179,16 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
                     return
                 art_id = urllib.parse.unquote(path[14:-6])
                 self._serve_graffiti_media(art_id, is_head=is_head)
+                return
+
+            # 9b. Graffiti Thumbnail /api/graffiti/:artId/thumbnail
+            if path.startswith("/api/graffiti/") and path.endswith("/thumbnail"):
+                thumb_ok, thumb_hdrs, thumb_retry = graffiti_thumbnail_limiter.check(client_ip)
+                if not thumb_ok:
+                    self._send_json(429, {"error": "rate_limited", "retry_after": thumb_retry}, thumb_hdrs, is_head=is_head)
+                    return
+                art_id = urllib.parse.unquote(path[14:-10])
+                self._serve_graffiti_thumbnail(art_id, is_head=is_head)
                 return
 
             # 10. Graffiti Detail /api/graffiti/:artId
@@ -418,5 +432,107 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
                 curr_offset += len(buf)
                 if chunk_resp.get("eof"):
                     break
+
+
+        def _serve_graffiti_thumbnail(self, art_id: str, is_head: bool = False) -> None:
+            cleanup_graffiti_cache()
+            if not is_art_id(art_id):
+                self._send_json(400, {"error": "invalid_art_id"}, is_head=is_head)
+                return
+
+            thumbs_dir = os.path.join(CACHE_DIR, "thumbnails")
+            os.makedirs(thumbs_dir, exist_ok=True)
+            thumb_path = os.path.join(thumbs_dir, f"{art_id}.jpg")
+
+            # 1. If cached thumbnail exists, serve directly
+            if os.path.isfile(thumb_path):
+                self._serve_thumbnail_file(thumb_path, is_head=is_head)
+                return
+
+            # 2. Get source media
+            source_file = find_cached_file(art_id)
+
+            if not source_file:
+                # Retrieve from service cache
+                info = routes.svc.get_graffiti_media_info(art_id)
+                if type(info) is dict and info.get("status") == "ok" and info.get("cache_path"):
+                    resolved = resolve_cache_path(info["cache_path"])
+                    if resolved and os.path.isfile(resolved):
+                        source_file = resolved
+
+            temp_source = None
+            if not source_file:
+                # Fetch full data to temporary file for thumbnail generation
+                temp_source = os.path.join(CACHE_DIR, f"{art_id}.tmp")
+                try:
+                    curr_offset = 0
+                    with open(temp_source, "wb") as f_out:
+                        while True:
+                            try:
+                                resp = routes.svc.get_graffiti_chunk(art_id, curr_offset, STREAM_CHUNK_BYTES)
+                            except TypeError:
+                                resp = routes.svc.get_graffiti_chunk(art_id, curr_offset)
+                            if not resp or type(resp) is not dict or resp.get("status") != "ok":
+                                break
+                            b64 = resp.get("data_b64", "")
+                            if b64 and type(b64) is str:
+                                buf = base64.b64decode(b64)
+                                f_out.write(buf)
+                                curr_offset += len(buf)
+                            if resp.get("eof"):
+                                break
+                    if os.path.isfile(temp_source) and os.path.getsize(temp_source) > 0:
+                        source_file = temp_source
+                except Exception as exc:
+                    log.warning("[thumbnail_fetch_failed] artId=%s err=%s", art_id, exc)
+
+            if not source_file or not os.path.isfile(source_file):
+                if temp_source and os.path.isfile(temp_source):
+                    with contextlib.suppress(OSError):
+                        os.remove(temp_source)
+                self._send_json(404, {"error": "media_not_found"}, is_head=is_head)
+                return
+
+            try:
+                # Generate thumbnail using Pillow
+                with PILImage.open(source_file) as img:
+                    # Convert transparent or paletted images to RGB
+                    if img.mode in ("RGBA", "P", "LA", "CMYK") or img.mode != "RGB":
+                        rgb_img = img.convert("RGB")
+                    else:
+                        rgb_img = img.copy()
+
+                    rgb_img.thumbnail((128, 128))
+                    rgb_img.save(thumb_path, format="JPEG", quality=75, optimize=True)
+
+                self._serve_thumbnail_file(thumb_path, is_head=is_head)
+            except Exception as exc:
+                log.warning("[thumbnail_generate_failed] artId=%s err=%s", art_id, exc)
+                self._send_json(400, {"error": "not_an_image"}, is_head=is_head)
+            finally:
+                if temp_source and os.path.isfile(temp_source):
+                    with contextlib.suppress(OSError):
+                        os.remove(temp_source)
+
+
+        def _serve_thumbnail_file(self, file_path: str, is_head: bool = False) -> None:
+            try:
+                size = os.path.getsize(file_path)
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+                self.send_header("Content-Length", str(size))
+                self._set_cors_headers()
+                self.end_headers()
+
+                if not is_head:
+                    with open(file_path, "rb") as f:
+                        while True:
+                            chunk = f.read(64 * 1024)
+                            if not chunk:
+                                break
+                            self.wfile.write(chunk)
+            except Exception as exc:
+                log.warning("[serve_thumbnail_failed] %s", exc)
 
     return ExplorerHTTPRequestHandler
