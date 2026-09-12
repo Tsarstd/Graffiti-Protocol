@@ -10,6 +10,7 @@ import re
 import subprocess
 import urllib.parse
 import contextlib
+import threading
 from http.server import BaseHTTPRequestHandler
 from typing import Dict, Any, Optional
 
@@ -72,35 +73,57 @@ def get_video_duration(video_path: str) -> Optional[float]:
     return None
 
 
-@benchmark(label="video_thumbnail_webp", threshold_ms=1200.0)
-def generate_video_thumbnail_webp(video_path: str, output_path: str) -> bool:
-    """Generate 3-frame animated WebP thumbnail starting from video midpoint forward."""
-    dur = get_video_duration(video_path)
-    if dur is not None and dur > 0:
-        midpoint = dur / 2.0
-        start_sec = max(0.0, min(midpoint, max(0.0, dur - 1.5)))
-    else:
-        start_sec = 1.0
+_VIDEO_THUMBNAIL_SEMAPHORE = threading.BoundedSemaphore(2)
 
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-ss", f"{start_sec:.2f}",
-        "-t", "1.5",
-        "-i", video_path,
-        "-vf", "fps=2,scale=160:160:force_original_aspect_ratio=increase,crop=160:160",
-        "-c:v", "libwebp",
-        "-pix_fmt", "yuv420p",
-        "-loop", "0",
-        "-an",
-        output_path,
-    ]
-    try:
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
-        return res.returncode == 0 and os.path.isfile(output_path) and os.path.getsize(output_path) > 0
-    except Exception as exc:
-        log.warning("[video_thumbnail_webp_err] %s", exc)
-        return False
+
+@benchmark(label="video_thumbnail_webp", threshold_ms=1500.0)
+def generate_video_thumbnail_webp(video_path: str, output_path: str) -> bool:
+    """Generate 11-frame animated WebP thumbnail starting from video midpoint forward."""
+    with _VIDEO_THUMBNAIL_SEMAPHORE:
+        dur = get_video_duration(video_path)
+        if dur is not None and dur > 0:
+            midpoint = dur / 2.0
+            start_sec = max(0.0, min(midpoint, max(0.0, dur - 2.0)))
+        else:
+            start_sec = 0.0
+
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-ss", f"{start_sec:.2f}",
+            "-i", video_path,
+            "-t", "2.5",
+            "-vf", "fps=6,scale=160:160:force_original_aspect_ratio=increase,crop=160:160",
+            "-vframes", "11",
+            "-c:v", "libwebp",
+            "-pix_fmt", "yuv420p",
+            "-loop", "0",
+            "-an",
+            output_path,
+        ]
+        try:
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=25)
+            if res.returncode == 0 and os.path.isfile(output_path) and os.path.getsize(output_path) > 0:
+                return True
+
+            if start_sec > 0:
+                # Fallback seek to start (0.00) if midpoint seek failed or produced 0 frames
+                cmd_fallback = list(cmd)
+                cmd_fallback[cmd_fallback.index("-ss") + 1] = "0.00"
+                res = subprocess.run(cmd_fallback, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=25)
+                if res.returncode == 0 and os.path.isfile(output_path) and os.path.getsize(output_path) > 0:
+                    return True
+
+            if os.path.isfile(output_path):
+                with contextlib.suppress(OSError):
+                    os.remove(output_path)
+            return False
+        except Exception as exc:
+            log.warning("[video_thumbnail_webp_err] %s", exc)
+            if os.path.isfile(output_path):
+                with contextlib.suppress(OSError):
+                    os.remove(output_path)
+            return False
 
 
 def create_handler_class(routes: Optional[ExplorerRoutes] = None):
@@ -527,13 +550,20 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
             thumb_path_webp = os.path.join(thumbs_dir, f"{art_id}.webp")
             thumb_path_jpg = os.path.join(thumbs_dir, f"{art_id}.jpg")
 
-            # 1. If cached thumbnail exists, serve directly (WebP first, then JPG)
+            # 1. If cached thumbnail exists and is valid (> 0 bytes), serve directly
             if os.path.isfile(thumb_path_webp):
-                self._serve_thumbnail_file(thumb_path_webp, content_type="image/webp", is_head=is_head)
-                return
+                if os.path.getsize(thumb_path_webp) > 0:
+                    self._serve_thumbnail_file(thumb_path_webp, content_type="image/webp", is_head=is_head)
+                    return
+                with contextlib.suppress(OSError):
+                    os.remove(thumb_path_webp)
+
             if os.path.isfile(thumb_path_jpg):
-                self._serve_thumbnail_file(thumb_path_jpg, content_type="image/jpeg", is_head=is_head)
-                return
+                if os.path.getsize(thumb_path_jpg) > 0:
+                    self._serve_thumbnail_file(thumb_path_jpg, content_type="image/jpeg", is_head=is_head)
+                    return
+                with contextlib.suppress(OSError):
+                    os.remove(thumb_path_jpg)
 
             # 2. Get source media
             source_file = find_cached_file(art_id)
@@ -584,7 +614,7 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
             media_type = infer_media_type(meta, source_file)
 
             try:
-                # Video handling: MP4, MKV (Midpoint forward 3-frame animated WebP)
+                # Video handling: MP4, MKV (Midpoint forward 11-frame animated WebP)
                 if media_type.startswith("video/") or source_file.lower().endswith((".mp4", ".mkv")):
                     if generate_video_thumbnail_webp(source_file, thumb_path_webp):
                         self._serve_thumbnail_file(thumb_path_webp, content_type="image/webp", is_head=is_head)
@@ -592,18 +622,19 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
                     self._send_json(501, {"error": "video_thumbnail_generator_unavailable"}, is_head=is_head)
                     return
 
-                # Image handling using Pillow
+                # Image handling using Pillow (WebP format, ~20% enlarged to 160x160)
                 with PILImage.open(source_file) as img:
-                    # Convert transparent or paletted images to RGB
-                    if img.mode in ("RGBA", "P", "LA", "CMYK") or img.mode != "RGB":
-                        rgb_img = img.convert("RGB")
+                    if img.mode in ("RGBA", "LA"):
+                        thumb_img = img.copy()
+                    elif img.mode != "RGB":
+                        thumb_img = img.convert("RGB")
                     else:
-                        rgb_img = img.copy()
+                        thumb_img = img.copy()
 
-                    rgb_img.thumbnail((128, 128))
-                    rgb_img.save(thumb_path_jpg, format="JPEG", quality=75, optimize=True)
+                    thumb_img.thumbnail((160, 160))
+                    thumb_img.save(thumb_path_webp, format="WEBP", quality=80)
 
-                self._serve_thumbnail_file(thumb_path_jpg, content_type="image/jpeg", is_head=is_head)
+                self._serve_thumbnail_file(thumb_path_webp, content_type="image/webp", is_head=is_head)
             except Exception as exc:
                 log.warning("[thumbnail_generate_failed] artId=%s err=%s", art_id, exc)
                 self._send_json(400, {"error": "not_an_image"}, is_head=is_head)

@@ -163,25 +163,25 @@ def test_server_api_routes():
                     req_thumb = urllib.request.Request(f"{base_url}/api/graffiti/{art_id}/thumbnail")
                     with urllib.request.urlopen(req_thumb) as resp:
                         assert resp.status == 200
-                        assert resp.headers.get("Content-Type") == "image/jpeg"
+                        assert resp.headers.get("Content-Type") == "image/webp"
                         assert "max-age=31536000" in resp.headers.get("Cache-Control", "")
                         body = resp.read()
                         assert len(body) > 0
-                        # Verify decoded thumbnail dimensions <= 128
+                        # Verify decoded thumbnail dimensions <= 160
                         thumb_pil = PILImage.open(io.BytesIO(body))
-                        assert thumb_pil.size[0] <= 128 and thumb_pil.size[1] <= 128
+                        assert thumb_pil.size[0] <= 160 and thumb_pil.size[1] <= 160
 
         # 15b. Cache hit & HEAD on thumbnail
         req_thumb_cached = urllib.request.Request(f"{base_url}/api/graffiti/{art_id}/thumbnail")
         with urllib.request.urlopen(req_thumb_cached) as resp:
             assert resp.status == 200
-            assert resp.headers.get("Content-Type") == "image/jpeg"
+            assert resp.headers.get("Content-Type") == "image/webp"
             assert "max-age=31536000" in resp.headers.get("Cache-Control", "")
 
         req_thumb_head = urllib.request.Request(f"{base_url}/api/graffiti/{art_id}/thumbnail", method="HEAD")
         with urllib.request.urlopen(req_thumb_head) as resp:
             assert resp.status == 200
-            assert resp.headers.get("Content-Type") == "image/jpeg"
+            assert resp.headers.get("Content-Type") == "image/webp"
             assert len(resp.read()) == 0
 
         # 15c. Invalid art_id & 404 media_not_found
@@ -209,10 +209,11 @@ def test_server_api_routes():
         httpd.server_close()
         import os
         from web.Backend.src.routes.explorer_routes import CACHE_DIR
-        test_thumb_file = os.path.join(CACHE_DIR, "thumbnails", f"{art_id}.jpg")
-        if os.path.isfile(test_thumb_file):
-            with contextlib.suppress(OSError):
-                os.remove(test_thumb_file)
+        for ext in (".webp", ".jpg"):
+            test_thumb_file = os.path.join(CACHE_DIR, "thumbnails", f"{art_id}{ext}")
+            if os.path.isfile(test_thumb_file):
+                with contextlib.suppress(OSError):
+                    os.remove(test_thumb_file)
 
 
 def test_create_handler_class_default_cfg():
@@ -285,6 +286,7 @@ def test_generate_video_thumbnail_webp_midpoint(tmp_path):
             assert "-an" in cmd
             assert "-c:v" in cmd and "libwebp" in cmd
             assert "-pix_fmt" in cmd and "yuv420p" in cmd
+            assert "-vframes" in cmd and cmd[cmd.index("-vframes") + 1] == "11"
             # write dummy file
             with open(out_webp, "wb") as f:
                 f.write(b"RIFFdummyWEBP")
