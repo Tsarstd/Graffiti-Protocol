@@ -127,41 +127,55 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
         def do_HEAD(self) -> None:
             try:
                 self._handle_get(is_head=True)
+            except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+                pass
             except Exception as exc:
                 log.exception("[unhandled_server_error_head] : %s", exc)
-                self.send_response(500)
-                self._set_cors_headers()
-                self.end_headers()
+                with contextlib.suppress(Exception):
+                    self.send_response(500)
+                    self._set_cors_headers()
+                    self.end_headers()
 
 
         def do_GET(self) -> None:
             try:
                 self._handle_get(is_head=False)
+            except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+                pass
             except Exception as exc:
                 log.exception("[unhandled_server_error] : %s", exc)
-                self._send_json(500, {"error": "internal_error", "detail": str(exc)})
+                with contextlib.suppress(Exception):
+                    self._send_json(500, {"error": "internal_error", "detail": str(exc)})
 
 
         def do_POST(self) -> None:
-            client_ip = self._get_client_ip()
-            api_ok, api_hdrs, api_retry = api_limiter.check(client_ip)
-            if not api_ok:
-                self._send_json(429, {"error": "rate_limited", "retry_after": api_retry}, api_hdrs)
-                return
-
-            parsed = urllib.parse.urlsplit(self.path)
-            path = parsed.path.rstrip("/")
-
-            if path == "/api/prefetch-blocks":
-                s_ok, s_hdrs, s_retry = search_limiter.check(client_ip)
-                if not s_ok:
-                    self._send_json(429, {"error": "rate_limited", "retry_after": s_retry}, s_hdrs)
+            try:
+                client_ip = self._get_client_ip()
+                api_ok, api_hdrs, api_retry = api_limiter.check(client_ip)
+                if not api_ok:
+                    self._send_json(429, {"error": "rate_limited", "retry_after": api_retry}, api_hdrs)
                     return
-                code, resp = routes.handle_prefetch_blocks()
-                self._send_json(code, resp, api_hdrs)
-                return
 
-            self._send_json(404, {"error": "not_found"}, api_hdrs)
+                parsed = urllib.parse.urlsplit(self.path)
+                path = parsed.path.rstrip("/")
+
+                if path == "/api/prefetch-blocks":
+                    s_ok, s_hdrs, s_retry = search_limiter.check(client_ip)
+                    if not s_ok:
+                        self._send_json(429, {"error": "rate_limited", "retry_after": s_retry}, s_hdrs)
+                        return
+                    code, resp = routes.handle_prefetch_blocks()
+                    self._send_json(code, resp, api_hdrs)
+                    return
+
+                self._send_json(404, {"error": "not_found"}, api_hdrs)
+            except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+                pass
+            except Exception as exc:
+                log.exception("[unhandled_server_error_post] : %s", exc)
+                with contextlib.suppress(Exception):
+                    self._send_json(500, {"error": "internal_error", "detail": str(exc)})
+
 
 
 # =============================================================================
@@ -423,78 +437,83 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
                             break
                         self.wfile.write(chunk)
                 return True
+            except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+                return True
             except Exception as exc:
                 log.warning("[serve_local_file_failed] %s", exc)
                 return False
 
 
         def _stream_graffiti_chunks(self, art_id: str, total_size: int, meta: Optional[Dict[str, Any]], is_head: bool = False) -> None:
-            filename = meta.get("filename") if meta else art_id
-            media_type = infer_media_type(meta, filename)
+            try:
+                filename = meta.get("filename") if meta else art_id
+                media_type = infer_media_type(meta, filename)
 
-            start = 0
-            end = max(0, total_size - 1) if total_size > 0 else 0
+                start = 0
+                end = max(0, total_size - 1) if total_size > 0 else 0
 
-            range_header = self.headers.get("Range")
-            range_info = parse_range_header(range_header, total_size) if total_size > 0 else None
+                range_header = self.headers.get("Range")
+                range_info = parse_range_header(range_header, total_size) if total_size > 0 else None
 
-            if range_info:
-                if range_info.get("invalid"):
-                    self.send_response(416)
-                    self.send_header("Content-Range", f"bytes */{total_size}")
+                if range_info:
+                    if range_info.get("invalid"):
+                        self.send_response(416)
+                        self.send_header("Content-Range", f"bytes */{total_size}")
+                        self._set_cors_headers()
+                        self.end_headers()
+                        return
+                    start = range_info["start"]
+                    end = range_info["end"]
+                    content_len = end - start + 1
+                    self.send_response(206)
+                    self.send_header("Content-Type", media_type)
+                    self.send_header("Cache-Control", "public, max-age=300")
+                    self.send_header("Accept-Ranges", "bytes")
+                    self.send_header("Content-Range", f"bytes {start}-{end}/{total_size}")
+                    self.send_header("Content-Length", str(content_len))
                     self._set_cors_headers()
                     self.end_headers()
+                else:
+                    self.send_response(200)
+                    self.send_header("Content-Type", media_type)
+                    self.send_header("Cache-Control", "public, max-age=300")
+                    self.send_header("Accept-Ranges", "bytes")
+                    if total_size > 0:
+                        self.send_header("Content-Length", str(total_size))
+                    self._set_cors_headers()
+                    self.end_headers()
+
+                if is_head:
                     return
-                start = range_info["start"]
-                end = range_info["end"]
-                content_len = end - start + 1
-                self.send_response(206)
-                self.send_header("Content-Type", media_type)
-                self.send_header("Cache-Control", "public, max-age=300")
-                self.send_header("Accept-Ranges", "bytes")
-                self.send_header("Content-Range", f"bytes {start}-{end}/{total_size}")
-                self.send_header("Content-Length", str(content_len))
-                self._set_cors_headers()
-                self.end_headers()
-            else:
-                self.send_response(200)
-                self.send_header("Content-Type", media_type)
-                self.send_header("Cache-Control", "public, max-age=300")
-                self.send_header("Accept-Ranges", "bytes")
-                if total_size > 0:
-                    self.send_header("Content-Length", str(total_size))
-                self._set_cors_headers()
-                self.end_headers()
 
-            if is_head:
+                curr_offset = start
+                target_end = end if total_size > 0 else sys.maxsize
+
+                while curr_offset <= target_end:
+                    want = min(STREAM_CHUNK_BYTES, target_end - curr_offset + 1) if total_size > 0 else STREAM_CHUNK_BYTES
+                    chunk_resp = routes.svc.get_graffiti_chunk(art_id, curr_offset, want)
+                    if not chunk_resp or chunk_resp.get("status") != "ok" or not chunk_resp.get("data_b64"):
+                        break
+
+                    try:
+                        buf = base64.b64decode(chunk_resp["data_b64"])
+                    except Exception:
+                        break
+
+                    if not buf:
+                        break
+
+                    try:
+                        self.wfile.write(buf)
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                        break
+
+                    curr_offset += len(buf)
+                    if chunk_resp.get("eof"):
+                        break
+            except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
                 return
-
-            curr_offset = start
-            target_end = end if total_size > 0 else sys.maxsize
-
-            while curr_offset <= target_end:
-                want = min(STREAM_CHUNK_BYTES, target_end - curr_offset + 1) if total_size > 0 else STREAM_CHUNK_BYTES
-                chunk_resp = routes.svc.get_graffiti_chunk(art_id, curr_offset, want)
-                if not chunk_resp or chunk_resp.get("status") != "ok" or not chunk_resp.get("data_b64"):
-                    break
-
-                try:
-                    buf = base64.b64decode(chunk_resp["data_b64"])
-                except Exception:
-                    break
-
-                if not buf:
-                    break
-
-                try:
-                    self.wfile.write(buf)
-                    self.wfile.flush()
-                except (BrokenPipeError, ConnectionResetError):
-                    break
-
-                curr_offset += len(buf)
-                if chunk_resp.get("eof"):
-                    break
 
 
         def _serve_graffiti_thumbnail(self, art_id: str, is_head: bool = False) -> None:
@@ -605,7 +624,6 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
                 self.send_header("Content-Length", str(size))
                 self._set_cors_headers()
                 self.end_headers()
-                log.info("[thumbnail_served] file=%s content_type=%s bytes=%s", os.path.basename(file_path), content_type, size)
 
                 if not is_head:
                     with open(file_path, "rb") as f:
@@ -614,6 +632,8 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
                             if not chunk:
                                 break
                             self.wfile.write(chunk)
+            except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+                pass
             except Exception as exc:
                 log.warning("[serve_thumbnail_failed] %s", exc)
 

@@ -319,5 +319,34 @@ def test_video_thumbnail_benchmark_threshold_warning(tmp_path):
                 assert "video_thumbnail_webp" in mock_warn.call_args[0][1]
 
 
+def test_disconnect_handling_in_media_and_thumbnail(tmp_path):
+    from unittest.mock import MagicMock
+    handler_cls = create_handler_class(MagicMock())
+    handler = handler_cls.__new__(handler_cls)
+    dummy_file = str(tmp_path / "test.mp4")
+    with open(dummy_file, "wb") as f:
+        f.write(b"0" * 1024)
+
+    # 1. _serve_local_file on ConnectionResetError
+    handler.headers = {}
+    handler.wfile = MagicMock()
+    handler.wfile.write.side_effect = ConnectionResetError(104, "Connection reset by peer")
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler._set_cors_headers = MagicMock()
+    with patch("web.Backend.src.server.log.warning") as mock_warn:
+        res = handler._serve_local_file(dummy_file, 1024, {})
+        assert res is True
+        mock_warn.assert_not_called()
+
+    # 2. _serve_thumbnail_file on BrokenPipeError
+    handler.wfile.write.side_effect = BrokenPipeError(32, "Broken pipe")
+    with patch("web.Backend.src.server.log.warning") as mock_warn:
+        handler._serve_thumbnail_file(dummy_file)
+        mock_warn.assert_not_called()
+
+
+
 
 
