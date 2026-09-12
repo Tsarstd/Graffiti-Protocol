@@ -6,6 +6,8 @@ import os
 import sys
 import json
 import base64
+import re
+import subprocess
 import urllib.parse
 import contextlib
 from http.server import BaseHTTPRequestHandler
@@ -14,6 +16,7 @@ from typing import Dict, Any, Optional
 from PIL import Image as PILImage
 
 from tsarchain.utils import config as CFG
+from tsarchain.utils.benchmarks import benchmark
 from web.Backend.src.utils.rate_limit import RateLimiter
 from web.Backend.src.routes.health import handle_health
 from web.Backend.src.routes.explorer_routes import (
@@ -38,6 +41,66 @@ api_limiter = RateLimiter(window_ms=60 * 1000, max_requests=120)
 search_limiter = RateLimiter(window_ms=60 * 1000, max_requests=20)
 graffiti_media_limiter = RateLimiter(window_ms=60 * 1000, max_requests=120)
 graffiti_thumbnail_limiter = RateLimiter(window_ms=60 * 1000, max_requests=180)
+
+
+@benchmark(label="video_duration_probe", threshold_ms=400.0)
+def get_video_duration(video_path: str) -> Optional[float]:
+    """Retrieve video duration in seconds via ffprobe or ffmpeg without extra dependencies."""
+    with contextlib.suppress(Exception):
+        cmd = [
+            "ffprobe",
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            video_path,
+        ]
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
+        if res.returncode == 0 and res.stdout.strip():
+            val = float(res.stdout.strip())
+            if val > 0:
+                return val
+
+    with contextlib.suppress(Exception):
+        cmd = ["ffmpeg", "-i", video_path]
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
+        m = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.?\d*)", res.stderr or "")
+        if m:
+            h, m_min, s = float(m.group(1)), float(m.group(2)), float(m.group(3))
+            total = h * 3600 + m_min * 60 + s
+            if total > 0:
+                return total
+    return None
+
+
+@benchmark(label="video_thumbnail_webp", threshold_ms=1200.0)
+def generate_video_thumbnail_webp(video_path: str, output_path: str) -> bool:
+    """Generate 3-frame animated WebP thumbnail starting from video midpoint forward."""
+    dur = get_video_duration(video_path)
+    if dur is not None and dur > 0:
+        midpoint = dur / 2.0
+        start_sec = max(0.0, min(midpoint, max(0.0, dur - 1.5)))
+    else:
+        start_sec = 1.0
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-ss", f"{start_sec:.2f}",
+        "-t", "1.5",
+        "-i", video_path,
+        "-vf", "fps=2,scale=160:160:force_original_aspect_ratio=increase,crop=160:160",
+        "-c:v", "libwebp",
+        "-pix_fmt", "yuv420p",
+        "-loop", "0",
+        "-an",
+        output_path,
+    ]
+    try:
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+        return res.returncode == 0 and os.path.isfile(output_path) and os.path.getsize(output_path) > 0
+    except Exception as exc:
+        log.warning("[video_thumbnail_webp_err] %s", exc)
+        return False
 
 
 def create_handler_class(routes: Optional[ExplorerRoutes] = None):
@@ -442,11 +505,15 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
 
             thumbs_dir = os.path.join(CACHE_DIR, "thumbnails")
             os.makedirs(thumbs_dir, exist_ok=True)
-            thumb_path = os.path.join(thumbs_dir, f"{art_id}.jpg")
+            thumb_path_webp = os.path.join(thumbs_dir, f"{art_id}.webp")
+            thumb_path_jpg = os.path.join(thumbs_dir, f"{art_id}.jpg")
 
-            # 1. If cached thumbnail exists, serve directly
-            if os.path.isfile(thumb_path):
-                self._serve_thumbnail_file(thumb_path, is_head=is_head)
+            # 1. If cached thumbnail exists, serve directly (WebP first, then JPG)
+            if os.path.isfile(thumb_path_webp):
+                self._serve_thumbnail_file(thumb_path_webp, content_type="image/webp", is_head=is_head)
+                return
+            if os.path.isfile(thumb_path_jpg):
+                self._serve_thumbnail_file(thumb_path_jpg, content_type="image/jpeg", is_head=is_head)
                 return
 
             # 2. Get source media
@@ -493,8 +560,20 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
                 self._send_json(404, {"error": "media_not_found"}, is_head=is_head)
                 return
 
+            meta_resp = routes.svc.get_graffiti_media_meta(art_id)
+            meta = meta_resp.get("meta", {}) if (type(meta_resp) is dict and meta_resp.get("status") == "ok" and type(meta_resp.get("meta")) is dict) else None
+            media_type = infer_media_type(meta, source_file)
+
             try:
-                # Generate thumbnail using Pillow
+                # Video handling: MP4, MKV (Midpoint forward 3-frame animated WebP)
+                if media_type.startswith("video/") or source_file.lower().endswith((".mp4", ".mkv")):
+                    if generate_video_thumbnail_webp(source_file, thumb_path_webp):
+                        self._serve_thumbnail_file(thumb_path_webp, content_type="image/webp", is_head=is_head)
+                        return
+                    self._send_json(501, {"error": "video_thumbnail_generator_unavailable"}, is_head=is_head)
+                    return
+
+                # Image handling using Pillow
                 with PILImage.open(source_file) as img:
                     # Convert transparent or paletted images to RGB
                     if img.mode in ("RGBA", "P", "LA", "CMYK") or img.mode != "RGB":
@@ -503,9 +582,9 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
                         rgb_img = img.copy()
 
                     rgb_img.thumbnail((128, 128))
-                    rgb_img.save(thumb_path, format="JPEG", quality=75, optimize=True)
+                    rgb_img.save(thumb_path_jpg, format="JPEG", quality=75, optimize=True)
 
-                self._serve_thumbnail_file(thumb_path, is_head=is_head)
+                self._serve_thumbnail_file(thumb_path_jpg, content_type="image/jpeg", is_head=is_head)
             except Exception as exc:
                 log.warning("[thumbnail_generate_failed] artId=%s err=%s", art_id, exc)
                 self._send_json(400, {"error": "not_an_image"}, is_head=is_head)
@@ -515,15 +594,18 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
                         os.remove(temp_source)
 
 
-        def _serve_thumbnail_file(self, file_path: str, is_head: bool = False) -> None:
+        def _serve_thumbnail_file(self, file_path: str, content_type: Optional[str] = None, is_head: bool = False) -> None:
             try:
                 size = os.path.getsize(file_path)
+                if not content_type:
+                    content_type = "image/webp" if file_path.lower().endswith(".webp") else "image/jpeg"
                 self.send_response(200)
-                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Content-Type", content_type)
                 self.send_header("Cache-Control", "public, max-age=31536000, immutable")
                 self.send_header("Content-Length", str(size))
                 self._set_cors_headers()
                 self.end_headers()
+                log.info("[thumbnail_served] file=%s content_type=%s bytes=%s", os.path.basename(file_path), content_type, size)
 
                 if not is_head:
                     with open(file_path, "rb") as f:

@@ -249,3 +249,75 @@ def test_handler_suppresses_abrupt_disconnect():
         handler.handle()
 
 
+def test_get_video_duration():
+    from unittest.mock import MagicMock
+    from web.Backend.src.server import get_video_duration
+
+    # 1. ffprobe success
+    mock_res = MagicMock(returncode=0, stdout="42.50\n")
+    with patch("subprocess.run", return_value=mock_res):
+        dur = get_video_duration("dummy.mp4")
+        assert dur == 42.50
+
+    # 2. ffmpeg fallback success (ffprobe fails with code 1, ffmpeg succeeds with stderr Duration)
+    mock_res_err = MagicMock(returncode=1, stderr="Duration: 00:01:30.00, start: 0.000000, bitrate: 1200 kb/s")
+    with patch("subprocess.run", side_effect=[MagicMock(returncode=1, stdout=""), mock_res_err]):
+        dur = get_video_duration("dummy.mp4")
+        assert dur == 90.0
+
+    # 3. No tools / process error
+    with patch("subprocess.run", side_effect=FileNotFoundError):
+        assert get_video_duration("dummy.mp4") is None
+
+
+def test_generate_video_thumbnail_webp_midpoint(tmp_path):
+    from web.Backend.src.server import generate_video_thumbnail_webp
+
+    out_webp = str(tmp_path / "thumb.webp")
+
+    # Mock duration = 20.0s -> midpoint = 10.0s
+    with patch("web.Backend.src.server.get_video_duration", return_value=20.0):
+        def fake_run(cmd, **kwargs):
+            # Verify midpoint seeking -ss 10.00
+            assert "-ss" in cmd
+            ss_idx = cmd.index("-ss")
+            assert cmd[ss_idx + 1] == "10.00"
+            assert "-an" in cmd
+            assert "-c:v" in cmd and "libwebp" in cmd
+            assert "-pix_fmt" in cmd and "yuv420p" in cmd
+            # write dummy file
+            with open(out_webp, "wb") as f:
+                f.write(b"RIFFdummyWEBP")
+            from unittest.mock import MagicMock
+            return MagicMock(returncode=0)
+
+        with patch("subprocess.run", side_effect=fake_run):
+            ok = generate_video_thumbnail_webp("input.mp4", out_webp)
+            assert ok is True
+
+
+def test_video_thumbnail_benchmark_threshold_warning(tmp_path):
+    from web.Backend.src.server import generate_video_thumbnail_webp
+
+    out_webp = str(tmp_path / "thumb.webp")
+    with patch("web.Backend.src.server.get_video_duration", return_value=10.0):
+        def slow_run(cmd, **kwargs):
+            time.sleep(0.01)  # small sleep
+            with open(out_webp, "wb") as f:
+                f.write(b"RIFFWEBP")
+            from unittest.mock import MagicMock
+            return MagicMock(returncode=0)
+
+        # Test benchmark warning when threshold is set low
+        with patch("subprocess.run", side_effect=slow_run):
+            with patch("tsarchain.utils.benchmarks.log.warning") as mock_warn:
+                # Patch threshold to 1.0ms to simulate spike warning
+                from tsarchain.utils.benchmarks import benchmark
+                wrapped = benchmark("video_thumbnail_webp", threshold_ms=1.0)(lambda: slow_run(None))
+                wrapped()
+                mock_warn.assert_called_once()
+                assert "video_thumbnail_webp" in mock_warn.call_args[0][1]
+
+
+
+
