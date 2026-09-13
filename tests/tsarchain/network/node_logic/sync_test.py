@@ -419,6 +419,88 @@ def test_download_blocks_reorg_mismatch(mock_cfg, mock_from_storage, mock_apply,
     mock_node.request_sync.assert_called_once_with(fast=True)
 
 
+@patch("tsarchain.network.node_logic.sync.Block.from_storage_bytes")
+@patch("tsarchain.network.node_logic.sync.CFG")
+def test_download_blocks_multi_block_reorg_success(mock_cfg, mock_from_storage, mock_node):
+    import base64
+    import struct
+    from tsarchain.core.block import Block
+
+    mock_cfg.BLOCK_DOWNLOAD_BATCH_MAX = 10
+    mock_cfg.SYNC_TIMEOUT = 10.0
+    mock_cfg.FAST_SYNC_INTERVAL = 1.0
+    peer = ("127.0.0.1", 8333)
+
+    # Local chain has 101 blocks (0..100).
+    # Reorg fork starts at height 99 (parent is block 98).
+    parent_hash_98 = b"parent_hash_98"
+    mock_node.broadcast.blockchain.chain[98].hash = MagicMock(return_value=parent_hash_98)
+    b99 = Block(height=99, prev_block_hash=parent_hash_98, transactions=[], nonce=1)
+    b99.hash = MagicMock(return_value=b"alt_hash_99")
+    b100 = Block(height=100, prev_block_hash=b"alt_hash_99", transactions=[], nonce=2)
+    b100.hash = MagicMock(return_value=b"alt_hash_100")
+    b101 = Block(height=101, prev_block_hash=b"alt_hash_100", transactions=[], nonce=3)
+    b101.hash = MagicMock(return_value=b"alt_hash_101")
+
+    blocks = [b99, b100, b101]
+    mock_from_storage.side_effect = blocks
+
+    raw_payload = b""
+    for _ in blocks:
+        raw_payload += struct.pack("<I", len(b"raw")) + b"raw"
+    b64_payload = base64.b64encode(raw_payload).decode("ascii")
+
+    mock_node.rpc_request = MagicMock(return_value={
+        "type": "BLOCKS_BIN",
+        "count": len(blocks),
+        "data": b64_payload
+    })
+    mock_node.broadcast.blockchain.replace_with = MagicMock(return_value=True)
+    mock_node.broadcast.broadcast_block = MagicMock()
+
+    applied, elapsed = _download_blocks(mock_node, peer, [99, 100, 101])
+    assert applied == 3
+    mock_node.broadcast.blockchain.replace_with.assert_called_once()
+    candidate_arg = mock_node.broadcast.blockchain.replace_with.call_args[0][0]
+    assert len(candidate_arg.chain) == 99 + 3  # 0..98 (99 blocks) + 3 alt blocks = 102 blocks
+    assert candidate_arg.chain[-1] == b101
+    mock_node.broadcast.broadcast_block.assert_called_once_with(b101, mock_node.peers)
+
+
+@patch("tsarchain.network.node_logic.sync.Block.from_storage_bytes")
+@patch("tsarchain.network.node_logic.sync.CFG")
+def test_download_blocks_multi_block_reorg_rejected(mock_cfg, mock_from_storage, mock_node):
+    import base64
+    import struct
+    from tsarchain.core.block import Block
+
+    mock_cfg.BLOCK_DOWNLOAD_BATCH_MAX = 10
+    mock_cfg.SYNC_TIMEOUT = 10.0
+    mock_cfg.FAST_SYNC_INTERVAL = 1.0
+    peer = ("127.0.0.1", 8333)
+
+    parent_hash_98 = b"parent_hash_98"
+    mock_node.broadcast.blockchain.chain[98].hash = MagicMock(return_value=parent_hash_98)
+    b99 = Block(height=99, prev_block_hash=parent_hash_98, transactions=[], nonce=1)
+    b99.hash = MagicMock(return_value=b"alt_hash_99")
+
+    mock_from_storage.return_value = b99
+    raw_payload = struct.pack("<I", len(b"raw")) + b"raw"
+    b64_payload = base64.b64encode(raw_payload).decode("ascii")
+
+    mock_node.rpc_request = MagicMock(return_value={
+        "type": "BLOCKS_BIN",
+        "count": 1,
+        "data": b64_payload
+    })
+    mock_node.broadcast.blockchain.replace_with = MagicMock(side_effect=ValueError("Reject: candidate chainwork < local"))
+    mock_node.request_sync = MagicMock()
+
+    applied, elapsed = _download_blocks(mock_node, peer, [99])
+    assert applied == 0
+    mock_node.request_sync.assert_called_once_with(fast=True)
+
+
 # ---------------------------------------------------------
 # _apply_block_from_sync tests
 # ---------------------------------------------------------
@@ -427,3 +509,4 @@ def test_apply_block_from_sync(mock_node):
     res = _apply_block_from_sync(mock_node, {"hash": "test"}, ("127.0.0.1", 8333))
     assert res is True
     mock_node.broadcast.receive_block.assert_called_once()
+

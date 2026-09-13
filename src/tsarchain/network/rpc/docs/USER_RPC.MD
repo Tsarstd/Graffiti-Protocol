@@ -313,15 +313,15 @@ The node operates purely as a **Blind Relay & Ephemeral Mailbox Router** with ze
 #### 2. Offline Message Mailbox Queue Management (`chat_mailbox`)
 * **Data Structure**: In-memory FIFO queue per recipient: `self.chat_mailbox[addr] = collections.deque()`.
 * **Strict Capacity Limits**:
-  - `CFG.CHAT_MAILBOX_MAX = 250`: Maximum queued messages per recipient address.
-  - `CFG.CHAT_GLOBAL_QUEUE_MAX = 20_000`: Maximum global accumulation across all registered users on the node.
+  - `CFG.CHAT_MAILBOX_MAX = 1000`: Maximum queued messages per recipient address.
+  - `CFG.CHAT_GLOBAL_QUEUE_MAX = 50_000`: Maximum global accumulation across all registered users on the node.
   - **Full Capacity Behavior**: If limits are reached, `mailbox_put` returns `{"type": "CHAT_ACK", "status": "mailbox_full"}` and the envelope is **dropped**. The sender receives an immediate visual failure status in the wallet UI (`× mailbox full`).
 * **Lifecycle & Immediate FIFO Drain (`dq.popleft()`)**:
   - **Recipient Offline**: Transit payloads are held in node RAM.
   - **Recipient Online (`CHAT_PULL`)**: The node executes `dq.popleft()` for each retrieved message. The payload is **permanently and immediately deleted from node RAM on delivery**.
   - **Quota Reset**: The recipient's mailbox slot immediately returns to `0 / 250`.
 * **Asynchronous Garbage Collection (`gc_mailboxes`)**:
-  - Messages carry a time-to-live of `CFG.CHAT_TTL_S = 86400` (24 hours).
+  - Messages carry a time-to-live of `CFG.CHAT_TTL_S = 2 * 86400` (48 hours).
   - Background discovery loop automatically sweeps expired messages asynchronously, keeping client `CHAT_PULL` response latency minimal (sub-millisecond).
 * **Privacy & Anti-Forensic Guarantee**:
   - The mailbox is **In-Memory Ephemeral (Zero Disk/LMDB Writes)**.
