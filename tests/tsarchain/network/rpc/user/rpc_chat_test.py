@@ -9,6 +9,7 @@ from threading import Lock
 from tsarchain.network.rpc.user_rpc.category.chat import (
     chat_register,
     chat_lookup_pub,
+    chat_check_prekeys,
     chat_presence,
     chat_publish_prekeys,
     chat_get_prekey,
@@ -609,6 +610,64 @@ class TestChatGetPrekey:
         message = {"address": addr}
         result = chat_get_prekey(server, message, client_ip="ip", is_miner_sender=False)
         assert result["bundle"]["opk"] is None
+
+
+class TestChatCheckPrekeys:
+    def test_registered_with_opks(self, server):
+        addr = make_valid_address()
+        server.chat_prekeys[addr] = {
+            "ik": "a"*64,
+            "spk": "b"*64,
+            "sig": "c"*128,
+            "opk_list": ["d"*64, "e"*64],
+            "ts": 1726000000,
+        }
+        message = {"address": addr}
+        result = chat_check_prekeys(server, message, {}, "id", client_ip="ip")
+        assert result["type"] == "CHAT_PREKEYS_STATUS"
+        assert result["address"] == addr
+        assert result["registered"] is True
+        assert result["has_ik"] is True
+        assert result["has_spk"] is True
+        assert result["opk_count"] == 2
+        assert result["last_seen"] == 1726000000
+        # Check non-destructive: opk_list must NOT be popped
+        assert server.chat_prekeys[addr]["opk_list"] == ["d"*64, "e"*64]
+
+    def test_registered_without_opks(self, server):
+        addr = make_valid_address()
+        server.chat_prekeys[addr] = {
+            "ik": "a"*64,
+            "spk": "b"*64,
+            "sig": "c"*128,
+        }
+        message = {"address": addr}
+        result = chat_check_prekeys(server, message, {}, "id", client_ip="ip")
+        assert result["type"] == "CHAT_PREKEYS_STATUS"
+        assert result["address"] == addr
+        assert result["registered"] is True
+        assert result["has_ik"] is True
+        assert result["has_spk"] is True
+        assert result["opk_count"] == 0
+
+    def test_not_registered(self, server):
+        addr = make_valid_address()
+        message = {"address": addr}
+        result = chat_check_prekeys(server, message, {}, "id", client_ip="ip")
+        assert result["type"] == "CHAT_PREKEYS_STATUS"
+        assert result["address"] == addr
+        assert result["registered"] is False
+        assert result["has_ik"] is False
+        assert result["has_spk"] is False
+        assert result["opk_count"] == 0
+
+    def test_missing_address(self, server):
+        result = chat_check_prekeys(server, {}, {}, "id", client_ip="ip")
+        assert result == {"error": "missing address"}
+
+    def test_dispatcher_routing(self):
+        from tsarchain.network.rpc.user_rpc.dispatcher import HANDLER_MAP
+        assert HANDLER_MAP.get("CHAT_CHECK_PREKEYS") == chat_check_prekeys
 
 
 class TestChatSend:

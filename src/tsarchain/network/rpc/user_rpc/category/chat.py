@@ -348,6 +348,53 @@ def chat_get_prekey(self, message, *,
     return {"type":"CHAT_PREKEY_BUNDLE","bundle":{"ik": b["ik"], "spk": b["spk"], "sig": b["sig"], "opk": opk, "spend_pub": sp}}
 
 
+@benchmark(label="CHAT_CHECK_PREKEYS", threshold_ms=10.0)
+def chat_check_prekeys(self, message, pow_obj, base_identity, *,
+                       client_ip, **kwargs):
+    addr_s = (message.get("address") or "").strip().lower()
+    if not addr_s:
+        return {"error": "missing address"}
+    ok, pow_resp = CM.allow_rpc_with_pow(
+        self,
+        scope="rpc:chat_lookup",
+        table=self.rl_ip,
+        ip=client_ip,
+        identity=addr_s or base_identity,
+        key_label="chatcheck",
+        burst=CFG.CHAT_LOOKUP_RL_IP_BURST,
+        window_s=CFG.CHAT_LOOKUP_RL_IP_WINDOW_S,
+        backoff_s=CFG.CHAT_LOOKUP_RL_BACKOFF_S,
+        pow_obj=pow_obj,
+        difficulty=int(CFG.RPC_POW_DIFFICULTY_CHAT),
+    )
+    if not ok:
+        log.warning("[chat_check_prekeys] Rate limit/PoW failed for %s", addr_s)
+        return pow_resp
+
+    with self.chat_lock:
+        b = self.get_prekey_bundle(addr_s)
+        ik = (b.get("ik") or "").strip().lower()
+        spk = (b.get("spk") or "").strip().lower()
+        sig = (b.get("sig") or "").strip().lower()
+        opk_list = b.get("opk_list") or []
+        opk_count = len(opk_list) if type(opk_list) is list else 0
+        has_ik = bool(ik)
+        has_spk = bool(spk and sig)
+        is_registered = bool(has_ik and has_spk)
+        ts_field = b.get("ts")
+        last_seen = int(ts_field) if ts_field is not None else self.chat_presence_ts.get(addr_s)
+
+    return {
+        "type": "CHAT_PREKEYS_STATUS",
+        "address": addr_s,
+        "registered": is_registered,
+        "has_ik": has_ik,
+        "has_spk": has_spk,
+        "opk_count": opk_count,
+        "last_seen": last_seen,
+    }
+
+
 # ====== END OF PREKEY BUNDLE ======
 
 
@@ -511,7 +558,7 @@ def chat_read(self, message, pow_obj, base_identity, *,
     return {"type": "CHAT_READ_OK"}
 
 
-@benchmark(label="CHAT_PULL", threshold_ms=10.0)
+@benchmark(label="CHAT_PULL", threshold_ms=15.0)
 def chat_pull(self, message, *,
               client_ip, **kwargs):
     me = (message.get("address") or "").strip().lower()
