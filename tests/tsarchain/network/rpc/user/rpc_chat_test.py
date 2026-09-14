@@ -10,6 +10,7 @@ from tsarchain.network.rpc.user_rpc.category.chat import (
     chat_register,
     chat_lookup_pub,
     chat_check_prekeys,
+    chat_deactivate,
     chat_presence,
     chat_publish_prekeys,
     chat_get_prekey,
@@ -63,6 +64,7 @@ def mock_config():
         mock.CHAT_RELAY_MAX_INNER_BYTES = 4096
         mock.CHAT_RATCHET_INDEX_MAX = 2**32 - 1
         mock.CANONICAL_SEP = (",", ":")
+        mock.REACTIVATE_CHAT_COUNTDOWN = 86400
         yield mock
 
 
@@ -131,6 +133,11 @@ def server(mock_config, mock_common, mock_bech32, mock_hash160, mock_time, mock_
     server.chat_presence_ts = {}
     server.chat_presence_seen = set()
     server.chat_prekeys = {}
+    server.chat_mailbox = {}
+    server.chat_global_count = 0
+    server.chat_seen_mid = {}
+    server.chat_pull_seen = {}
+    server.chat_deactivated_cd = {}
     server.rl_ip = {}
     server.rl_addr = {}
     server.peers = {}
@@ -670,12 +677,127 @@ class TestChatCheckPrekeys:
         assert HANDLER_MAP.get("CHAT_CHECK_PREKEYS") == chat_check_prekeys
 
 
+class TestChatDeactivate:
+    def test_deactivate_success(self, server, mock_common, mock_time):
+        addr = make_valid_address()
+        spend_pub = make_valid_spend_pub()
+        sig = "a" * 128
+        ts = int(mock_time.time.return_value)
+
+        # Populate server state
+        server.chat_prekeys[addr] = {"ik": "a"*64, "spk": "b"*64}
+        server.chat_presence_pub[addr] = "a"*64
+        server.chat_presence_ts[addr] = ts
+        server.chat_spend_pub[addr] = spend_pub
+        server.chat_mailbox[addr] = [(ts + 100, {"dummy": "msg"}), (ts + 100, {"dummy": "msg2"})]
+        server.chat_global_count = 2
+
+        mock_common.verify_chat_signatures.return_value = {"deactivate": True}
+
+        message = {
+            "address": addr,
+            "spend_pub": spend_pub,
+            "deactivate_sig": sig,
+            "ts": ts,
+        }
+
+        result = chat_deactivate(server, message, {}, "id", client_ip="ip")
+        assert result["type"] == "CHAT_ACK"
+        assert result["status"] == "ok"
+        assert result["deactivated"] is True
+        assert result["address"] == addr
+
+        # Verify LMDB prekeys deleted
+        assert addr not in server.chat_prekeys
+        # Verify in-memory state cleared
+        assert addr not in server.chat_presence_pub
+        assert addr not in server.chat_presence_ts
+        assert addr not in server.chat_spend_pub
+        assert addr not in server.chat_mailbox
+        assert server.chat_global_count == 0
+
+    def test_deactivate_bad_address(self, server):
+        result = chat_deactivate(server, {}, {}, "id", client_ip="ip")
+        assert result["status"] == "bad_address"
+
+    def test_deactivate_missing_fields(self, server):
+        addr = make_valid_address()
+        message = {"address": addr}
+        result = chat_deactivate(server, message, {}, "id", client_ip="ip")
+        assert result["status"] == "bad_request"
+
+    def test_deactivate_invalid_timestamp(self, server):
+        addr = make_valid_address()
+        message = {
+            "address": addr,
+            "spend_pub": make_valid_spend_pub(),
+            "deactivate_sig": "a"*128,
+            "ts": "not-a-number",
+        }
+        result = chat_deactivate(server, message, {}, "id", client_ip="ip")
+        assert result["status"] == "bad_request"
+
+    def test_deactivate_stale_timestamp(self, server, mock_time):
+        addr = make_valid_address()
+        now = mock_time.time.return_value
+        message = {
+            "address": addr,
+            "spend_pub": make_valid_spend_pub(),
+            "deactivate_sig": "a"*128,
+            "ts": int(now - 1000),  # Stale timestamp beyond drift
+        }
+        result = chat_deactivate(server, message, {}, "id", client_ip="ip")
+        assert result["status"] == "time_drift"
+
+    def test_deactivate_bad_pubkey(self, server, mock_time):
+        addr = make_valid_address()
+        message = {
+            "address": addr,
+            "spend_pub": "invalid_hex",
+            "deactivate_sig": "a"*128,
+            "ts": int(mock_time.time.return_value),
+        }
+        result = chat_deactivate(server, message, {}, "id", client_ip="ip")
+        assert result["status"] == "bad_pubkey"
+
+    def test_deactivate_bad_signature(self, server, mock_common, mock_time):
+        addr = make_valid_address()
+        spend_pub = make_valid_spend_pub()
+        mock_common.verify_chat_signatures.side_effect = None
+        mock_common.verify_chat_signatures.return_value = {"deactivate": False}
+        message = {
+            "address": addr,
+            "spend_pub": spend_pub,
+            "deactivate_sig": "a"*128,
+            "ts": int(mock_time.time.return_value),
+        }
+        result = chat_deactivate(server, message, {}, "id", client_ip="ip")
+        assert result["status"] == "bad_sig"
+
+    def test_deactivate_rate_limited(self, server, mock_common):
+        mock_common.allow_rpc_with_pow.return_value = (False, {"error": "limit"})
+        addr = make_valid_address()
+        message = {
+            "address": addr,
+            "spend_pub": make_valid_spend_pub(),
+            "deactivate_sig": "a"*128,
+            "ts": 1000000,
+        }
+        result = chat_deactivate(server, message, {}, "id", client_ip="ip")
+        assert result == {"error": "limit"}
+
+    def test_dispatcher_routing(self):
+        from tsarchain.network.rpc.user_rpc.dispatcher import HANDLER_MAP
+        assert HANDLER_MAP.get("DEACTIVATE_CHAT") == chat_deactivate
+
+
 class TestChatSend:
     def test_success_direct(self, server, mock_time):
         frm = make_valid_address()
         to = make_valid_address()
         server.chat_presence_pub[frm] = "f" * 64  # from_static
         server.chat_spend_pub[frm] = make_valid_spend_pub()
+        server.chat_prekeys[to] = {"ik": "a"*64, "spk": "b"*64, "sig": "c"*64}
         # Set up message
         enc = {"nonce": "a"*24, "ct": "c"*100}  # nonce hex
         fp_hex = make_valid_pubkey()
@@ -769,6 +891,7 @@ class TestChatSend:
         to = make_valid_address()
         server.chat_presence_pub[frm] = "f"*64
         server.chat_spend_pub[frm] = make_valid_spend_pub()
+        server.chat_prekeys[to] = {"ik": "a"*64, "spk": "b"*64, "sig": "c"*64}
         server.peers = {("peer1", 1): {}, ("peer2", 2): {}}
         with patch("tsarchain.network.rpc.user_rpc.category.chat.CFG.CHAT_FORCE_RELAY", True):
             route = [("peer1", 1), ("peer2", 2)]
@@ -1052,6 +1175,7 @@ class TestChatRelay:
         to = make_valid_address()
         server.chat_presence_pub[frm] = "f"*64
         server.chat_spend_pub[frm] = make_valid_spend_pub()
+        server.chat_prekeys[to] = {"ik": "a"*64, "spk": "b"*64, "sig": "c"*64}
         
         signatures_checked = []
         def check_sigs(sig_list):
@@ -1079,3 +1203,100 @@ class TestChatRelay:
         assert len(signatures_checked) == 1
         signed_bytes = signatures_checked[0][2]
         assert ("k"*64).encode() in signed_bytes
+
+
+class TestChatDeactivationAndCooldown:
+    def test_chat_send_rejects_unregistered_recipient(self, server, mock_time):
+        frm = make_valid_address()
+        to = make_valid_address()
+        server.chat_presence_pub[frm] = "f"*64
+        server.chat_spend_pub[frm] = make_valid_spend_pub()
+        # to is not in server.chat_prekeys
+        message = {
+            "from": frm,
+            "to": to,
+            "enc": {"nonce": "a"*24, "ct": "c"*100},
+            "msg_id": 124,
+            "ts": int(mock_time.time.return_value),
+            "chat_sig": make_valid_sig(),
+            "ratchet_pn": 0,
+            "ratchet_n": 0,
+            "from_pub": make_valid_pubkey(),
+            "from_static": "f"*64,
+        }
+        result = chat_send(server, message, {}, "id", client_ip="ip",
+                           choose_relay_route=Mock(), relay_chain=Mock())
+        assert result == {"type": "CHAT_ACK", "status": "rejected", "reason": "recipient_not_registered"}
+
+    def test_chat_deactivate_sets_cooldown(self, server, mock_time):
+        addr = make_valid_address()
+        spend_pk = make_valid_spend_pub()
+        ts = int(mock_time.time.return_value)
+        server.chat_prekeys[addr] = {"ik": "a"*64, "spk": "b"*64}
+        server.chat_mailbox[addr] = [{"msg": "old"}]
+        server.chat_global_count = 1
+
+        message = {
+            "address": addr,
+            "spend_pub": spend_pk,
+            "ts": ts,
+            "deactivate_sig": make_valid_sig(),
+        }
+        result = chat_deactivate(server, message, {}, "id", client_ip="ip")
+        assert result == {"type": "CHAT_ACK", "status": "ok", "deactivated": True, "address": addr}
+        assert addr not in server.chat_prekeys
+        assert addr not in server.chat_mailbox
+        assert server.chat_global_count == 0
+        assert addr in server.chat_deactivated_cd
+        assert server.chat_deactivated_cd[addr] == ts
+
+    def test_chat_register_rejects_during_cooldown(self, server, mock_time):
+        addr = make_valid_address()
+        spend_pk = make_valid_spend_pub()
+        chat_pub = make_valid_pubkey()
+        ts = int(mock_time.time.return_value)
+        # Mark as recently deactivated
+        server.chat_deactivated_cd[addr] = ts - 100
+
+        message = {
+            "address": addr,
+            "pubkey": chat_pub,
+            "spend_pub": spend_pk,
+            "presence_sig": make_valid_sig(),
+            "reg_sig": make_valid_sig(),
+            "ts": ts,
+            "spk": make_valid_pubkey(),
+            "sig": make_valid_sig(),
+        }
+        result = chat_register(server, message, {}, "id", addr, client_ip="ip")
+        assert result.get("error") == "reactivate_cooldown"
+        assert result.get("status") == "rejected"
+        assert result.get("remaining_s") > 0
+
+    def test_chat_presence_rejects_during_cooldown(self, server, mock_time):
+        addr = make_valid_address()
+        spend_pk = make_valid_spend_pub()
+        ts = int(mock_time.time.return_value)
+        server.chat_deactivated_cd[addr] = ts - 100
+
+        message = {
+            "address": addr,
+            "pubkey": make_valid_pubkey(),
+            "spend_pub": spend_pk,
+            "presence_sig": make_valid_sig(),
+            "hops": 0,
+            "ts": ts,
+        }
+        result = chat_presence(server, message, {}, "id", addr, client_ip="ip")
+        assert result == {"error": "deactivated_cooldown"}
+
+    def test_chat_check_prekeys_reports_cooldown(self, server, mock_time):
+        addr = make_valid_address()
+        ts = int(mock_time.time.return_value)
+        server.chat_deactivated_cd[addr] = ts - 200
+
+        message = {"address": addr}
+        result = chat_check_prekeys(server, message, {}, "id", client_ip="ip")
+        assert result["type"] == "CHAT_PREKEYS_STATUS"
+        assert result["registered"] is False
+        assert result["cooldown_remaining_s"] > 0

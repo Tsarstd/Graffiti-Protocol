@@ -107,6 +107,26 @@ def chat_register(self, message, pow_obj, base_identity, addr, *,
 
         now = time.time()
         now_int = int(now)
+        try:
+            cd_map = self.chat_deactivated_cd
+            if type(cd_map) is dict and addr_s in cd_map:
+                last_deact = cd_map.get(addr_s, 0)
+                elapsed = now_int - last_deact
+                if elapsed < CFG.REACTIVATE_CHAT_COUNTDOWN:
+                    remaining = CFG.REACTIVATE_CHAT_COUNTDOWN - elapsed
+                    log.debug("[chat_register] Cooldown active for %s (%ds remaining)", addr_s, remaining)
+                    return {
+                        "type": "CHAT_ACK",
+                        "status": "rejected",
+                        "error": "reactivate_cooldown",
+                        "remaining_s": remaining,
+                        "reason": f"Chat reactivate is on cooldown. Remaining: {remaining}s",
+                    }
+                else:
+                    cd_map.pop(addr_s, None)
+        except (AttributeError, TypeError):
+            pass
+
         pid = secrets.token_hex(16)
         with self.chat_lock:
             self.chat_spend_pub[addr_s] = spend_pk
@@ -248,8 +268,22 @@ def chat_presence(self, message, pow_obj, base_identity, addr, *,
         difficulty=int(CFG.RPC_POW_DIFFICULTY_CHAT),
     )
     if not ok:
-        log.warning("[chat_presence] Addr rate limit/PoW failed for %s", addr_s)
+        log.debug("[chat_presence] Addr rate limit/PoW failed for %s", addr_s)
         return pow_resp
+
+    try:
+        cd_map = self.chat_deactivated_cd
+        if type(cd_map) is dict and addr_s in cd_map:
+            now_int = int(time.time())
+            last_deact = cd_map.get(addr_s, 0)
+            elapsed = now_int - last_deact
+            if elapsed < CFG.REACTIVATE_CHAT_COUNTDOWN:
+                log.debug("[chat_presence] Ignored presence for deactivated %s", addr_s)
+                return {"error": "deactivated_cooldown"}
+            else:
+                cd_map.pop(addr_s, None)
+    except (AttributeError, TypeError):
+        pass
 
     pid = message.get("pid") or secrets.token_hex(16)
     now_int = int(time.time())
@@ -294,7 +328,7 @@ def chat_publish_prekeys(self, message, pow_obj, base_identity, *,
         difficulty=int(CFG.RPC_POW_DIFFICULTY_CHAT),
     )
     if not ok:
-        log.warning("[chat_publish_prekeys] Rate limit/PoW failed for %s", addr_s)
+        log.debug("[chat_publish_prekeys] Rate limit/PoW failed for %s", addr_s)
         return pow_resp
 
     ik  = (message.get("ik")  or "").strip().lower()
@@ -303,6 +337,22 @@ def chat_publish_prekeys(self, message, pow_obj, base_identity, *,
     opk = (message.get("opk") or None)
     if not addr_s or not ik or not spk or not sig:
         return {"error":"missing fields"}
+
+    try:
+        cd_map = self.chat_deactivated_cd
+        if type(cd_map) is dict and addr_s in cd_map:
+            now_int = int(time.time())
+            last_deact = cd_map.get(addr_s, 0)
+            elapsed = now_int - last_deact
+            if elapsed < CFG.REACTIVATE_CHAT_COUNTDOWN:
+                remaining = CFG.REACTIVATE_CHAT_COUNTDOWN - elapsed
+                log.debug("[chat_publish_prekeys] Cooldown active for %s (%ds remaining)", addr_s, remaining)
+                return {"error": "reactivate_cooldown", "remaining_s": remaining}
+            else:
+                cd_map.pop(addr_s, None)
+    except (AttributeError, TypeError):
+        pass
+
     # validation: addr -> spend_pub exists? and SPK signature is signed by spend key
     get_sp = self.get_spend_pub
     sp = (get_sp(addr_s) or "").strip().lower() if callable(get_sp) else (self.chat_spend_pub.get(addr_s) or "").strip().lower()
@@ -383,6 +433,19 @@ def chat_check_prekeys(self, message, pow_obj, base_identity, *,
         is_registered = bool(has_ik and has_spk)
         ts_field = b.get("ts")
         last_seen = int(ts_field) if ts_field is not None else self.chat_presence_ts.get(addr_s)
+        cooldown_remaining = 0
+        try:
+            cd_map = self.chat_deactivated_cd
+            if type(cd_map) is dict and addr_s in cd_map:
+                now_int = int(time.time())
+                last_deact = cd_map.get(addr_s, 0)
+                elapsed = now_int - last_deact
+                if elapsed < CFG.REACTIVATE_CHAT_COUNTDOWN:
+                    cooldown_remaining = CFG.REACTIVATE_CHAT_COUNTDOWN - elapsed
+                else:
+                    cd_map.pop(addr_s, None)
+        except (AttributeError, TypeError):
+            pass
 
     return {
         "type": "CHAT_PREKEYS_STATUS",
@@ -392,6 +455,100 @@ def chat_check_prekeys(self, message, pow_obj, base_identity, *,
         "has_spk": has_spk,
         "opk_count": opk_count,
         "last_seen": last_seen,
+        "cooldown_remaining_s": cooldown_remaining,
+    }
+
+
+@benchmark(label="DEACTIVATE_CHAT", threshold_ms=15.0)
+def chat_deactivate(self, message, pow_obj, base_identity, *,
+                    client_ip, **kwargs):
+    addr_s = (message.get("address") or "").strip().lower()
+    if not addr_s:
+        return {"type": "CHAT_ACK", "status": "bad_address", "error": "missing address"}
+
+    ok, pow_resp = CM.allow_rpc_with_pow(
+        self,
+        scope="rpc:chat_reg",
+        table=self.rl_ip,
+        ip=client_ip,
+        identity=addr_s or base_identity,
+        key_label="chatdeact",
+        burst=CFG.CHAT_REG_RL_IP_BURST,
+        window_s=CFG.CHAT_REG_RL_WINDOW_S,
+        backoff_s=CFG.CHAT_REG_RL_BACKOFF_S,
+        pow_obj=pow_obj,
+        difficulty=int(CFG.RPC_POW_DIFFICULTY_CHAT),
+    )
+    if not ok:
+        log.debug("[chat_deactivate] Rate limit/PoW failed for %s", addr_s)
+        return pow_resp
+
+    spend_pub = (message.get("spend_pub") or "").strip().lower()
+    deactivate_sig = (message.get("deactivate_sig") or "").strip().lower()
+    ts_raw = message.get("ts")
+
+    if not spend_pub or not deactivate_sig or ts_raw is None:
+        return {"type": "CHAT_ACK", "status": "bad_request", "error": "missing fields"}
+
+    try:
+        ts_val = int(ts_raw)
+    except Exception:
+        return {"type": "CHAT_ACK", "status": "bad_request", "error": "invalid timestamp"}
+
+    if abs(time.time() - ts_val) > CFG.CHAT_TS_DRIFT_S:
+        return {"type": "CHAT_ACK", "status": "time_drift", "error": "stale timestamp"}
+
+    if len(spend_pub) != 66 or not all(c in "0123456789abcdef" for c in spend_pub):
+        return {"type": "CHAT_ACK", "status": "bad_pubkey", "error": "invalid spend_pub format"}
+
+    try:
+        hrp, data = bech32_decode(addr_s)
+        if hrp != CFG.ADDRESS_PREFIX or not data:
+            return {"type": "CHAT_ACK", "status": "bad_address", "error": "bad address hrp"}
+        converted = convertbits(data[1:], 5, 8, False)
+        if converted is None:
+            return {"type": "CHAT_ACK", "status": "bad_address", "error": "bad convertbits"}
+        prog = bytes(converted)
+        if len(prog) != 20:
+            return {"type": "CHAT_ACK", "status": "bad_address", "error": "address not p2wpkh"}
+        if hash160(bytes.fromhex(spend_pub)) != prog:
+            return {"type": "CHAT_ACK", "status": "bad_pubkey", "error": "address does not match spend_pub"}
+    except Exception as e:
+        return {"type": "CHAT_ACK", "status": "bad_address", "error": f"failed to decode address: {e}"}
+
+    deact_payload = b"|".join([b"DEACTIVATE_CHAT", addr_s.encode("utf-8"), str(ts_val).encode("utf-8")])
+    sig_ok = CM.verify_chat_signatures([("deactivate", spend_pub, deact_payload, deactivate_sig)])
+    if not sig_ok.get("deactivate"):
+        log.debug("[chat_deactivate] Bad signature for %s", addr_s)
+        return {"type": "CHAT_ACK", "status": "bad_sig", "error": "invalid signature"}
+
+    # 1. Delete persistent prekeys from LMDB database
+    self.delete_prekey_bundle(addr_s)
+
+    # 2. Clear presence and in-memory mailbox queues in RAM
+    with self.chat_lock:
+        self.chat_presence_pub.pop(addr_s, None)
+        self.chat_presence_ts.pop(addr_s, None)
+        self.chat_spend_pub.pop(addr_s, None)
+        self.chat_seen_mid.pop(addr_s, None)
+        self.chat_pull_seen.pop(addr_s, None)
+        dq = self.chat_mailbox.pop(addr_s, None)
+        if dq:
+            self.chat_global_count = max(0, self.chat_global_count - len(dq))
+        now_int = int(time.time())
+        try:
+            cd_map = self.chat_deactivated_cd
+            if type(cd_map) is dict:
+                cd_map[addr_s] = now_int
+        except (AttributeError, TypeError):
+            pass
+
+    log.info("[chat_deactivate] Chat successfully deactivated for %s", addr_s)
+    return {
+        "type": "CHAT_ACK",
+        "status": "ok",
+        "deactivated": True,
+        "address": addr_s,
     }
 
 
@@ -412,7 +569,7 @@ def chat_send(self, message, pow_obj, base_identity, *,
 
     err = _validate_send_fields(frm, to, enc, mid, ts, ratchet_pn, ratchet_n)
     if err:
-        log.warning("[chat_send] Field validation failed from %s (ip=%s): %s", frm, client_ip, err)
+        log.debug("[chat_send] Field validation failed from %s (ip=%s): %s", frm, client_ip, err)
         return err
 
     for scope, table, key_label, burst, window_s in [
@@ -474,6 +631,12 @@ def chat_send(self, message, pow_obj, base_identity, *,
     if not chat_verify.get("chat_send"):
         log.warning("[chat_send] Bad chat_sig from %s (ip=%s)", frm, client_ip)
         return {"type": "CHAT_ACK", "status": "rejected", "reason": "bad_sig"}
+
+    # Recipient registration validation
+    rec_b = self.get_prekey_bundle(to)
+    if not rec_b or not rec_b.get("ik"):
+        log.debug("[chat_send] Recipient %s not registered or deactivated", to)
+        return {"type": "CHAT_ACK", "status": "rejected", "reason": "recipient_not_registered"}
 
     msg_payload = {
         "from": frm,
