@@ -32,7 +32,7 @@ run_sudo() {
 }
 
 # 1. INSTALL RUST (via rustup)
-print_step "1/8: Checking/Installing Rust..."
+print_step "1/9: Checking/Installing Rust..."
 if ! command -v cargo &> /dev/null; then
     echo "Rust not found. Installing via rustup..."
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -42,7 +42,7 @@ else
 fi
 
 # 2. INSTALL CMAKE
-print_step "2/8: Checking/Installing CMake..."
+print_step "2/9: Checking/Installing CMake..."
 if ! command -v cmake &> /dev/null; then
     echo "CMake not found. Installing..."
     if [[ "$OSTYPE" == "linux-gnu"* ]]; then
@@ -61,7 +61,7 @@ else
 fi
 
 # 3. INSTALL PYTHON
-print_step "3/8: Checking/Installing Python..."
+print_step "3/9: Checking/Installing Python..."
 if ! command -v python3 &> /dev/null; then
     echo "Python3 not found. Installing..."
     if [[ "$OSTYPE" == "linux-gnu"* ]]; then
@@ -78,7 +78,7 @@ else
 fi
 
 # 4. INSTALL WEBSITE REQUIREMENTS ( Frontend Explorer )
-print_step "4/8: Checking/Installing Node.js & Frontend Explorer Dependencies..."
+print_step "4/9: Checking/Installing Node.js & Frontend Explorer Dependencies..."
 if ! command -v npm &> /dev/null; then
     echo "npm not found. Installing Node.js..."
     if [[ "$OSTYPE" == "linux-gnu"* ]]; then
@@ -99,8 +99,27 @@ else
     print_warn "npm is still not available. Skipping frontend dependencies."
 fi
 
-# 5. SETUP VIRTUAL ENVIRONMENT
-print_step "5/8: Setting up Python Virtual Environment (.venv)..."
+# 5. INSTALL FFMPEG (for video thumbnails in Web Backend)
+print_step "5/9: Checking/Installing FFmpeg (for video thumbnails)..."
+if ! command -v ffmpeg &> /dev/null; then
+    echo "ffmpeg not found. Installing..."
+    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        run_sudo apt-get update && run_sudo apt-get install -y ffmpeg
+    elif [[ "$OSTYPE" == "darwin"* ]]; then
+        if command -v brew &> /dev/null; then
+            brew install ffmpeg
+        else
+            print_warn "Homebrew not found. Please install ffmpeg manually."
+        fi
+    else
+        print_warn "Unsupported OS for automatic ffmpeg installation. Please install ffmpeg manually."
+    fi
+else
+    echo "ffmpeg is already installed."
+fi
+
+# 6. SETUP VIRTUAL ENVIRONMENT
+print_step "6/9: Setting up Python Virtual Environment (.venv)..."
 if [ ! -d ".venv" ]; then
     python3 -m venv .venv
     echo "Virtual environment created."
@@ -108,11 +127,11 @@ else
     echo "Virtual environment already exists."
 fi
 
-# 6. INSTALL MATURIN
-print_step "6/8: Installing Maturin..."
+# 7. INSTALL MATURIN
+print_step "7/9: Installing Maturin..."
 .venv/bin/pip install --upgrade pip maturin
 if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-    print_step "6.1/8: Installing patchelf for Linux rpath support..."
+    print_step "7.1/9: Installing patchelf for Linux rpath support..."
     if ! command -v patchelf &> /dev/null; then
         if command -v apt-get &> /dev/null; then
             run_sudo apt-get update && run_sudo apt-get install -y patchelf
@@ -129,12 +148,12 @@ if [[ "$OSTYPE" == "linux-gnu"* ]]; then
     fi
 fi
 
-# 7. INSTALL REQUIREMENTS
-print_step "7/8: Installing Python Requirements..."
+# 8. INSTALL REQUIREMENTS
+print_step "8/9: Installing Python Requirements..."
 .venv/bin/pip install -r requirements.txt
 
-# 8. BUILD NATIVE EXTENSION
-print_step "8/8: Building Native Extension (tsarcore_native)..."
+# 9. BUILD NATIVE EXTENSION
+print_step "9/9: Building Native Extension (tsarcore_native)..."
 cd tsarcore_native
 ../.venv/bin/maturin develop --release --features parallel
 cd ..

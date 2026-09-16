@@ -216,6 +216,38 @@ def test_guard_graffiti_output_post_valid(mixin):
     mixin._guard_graffiti_output(spk)  # Should not raise
 
 
+def test_guard_graffiti_output_post_duplicate_rejects(mixin):
+    sha = "a" * 64
+    creator = make_bech32_addr(b"b" * 20)
+    art_id = GRAFF.compute_art_id(sha, creator, decorate=True)
+    mroot = "c" * 64
+    reg_mock = Mock()
+    reg_mock.get_post.return_value = {
+        "art_id": art_id,
+        "sha256": sha,
+        "mroot": mroot,
+    }
+    mixin.broadcast.utxodb._graffiti_registry = reg_mock
+
+    meta = {
+        "event": "POST",
+        "sha256": sha,
+        "size": 100,
+        "mime": "image/jpeg",
+        "storer": make_bech32_addr(b"a" * 20),
+        "receipt": "abc",
+        "creator": creator,
+        "art_id": art_id,
+        "mroot": mroot,
+        "mchunk": 50,
+        "mcount": 2,
+    }
+    payload = GRAFF.encode_payload(meta)
+    spk = Script([OP_RETURN, payload])
+    with pytest.raises(ValueError, match="graffiti_duplicate_post"):
+        mixin._guard_graffiti_output(spk)
+
+
 def test_guard_graffiti_output_post_size_exceeds(mixin, monkeypatch):
     monkeypatch.setattr(CFG, "GRAFFITI_MAX_SIZE_BYTES", 100)
     meta = {

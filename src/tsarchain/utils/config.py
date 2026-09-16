@@ -547,6 +547,7 @@ CHAT_OPK_MIN_THRESHOLD     = 5  # minimum one-time pre-keys kept ready
 CHAT_OPK_REFILL_COUNT      = 20  # number of pre-keys generated when refilling
 CHAT_SPK_ROTATE_INTERVAL_S = 24 * 3600  # seconds between signed pre-key rotations
 CHAT_HISTORY_MAX_PER_PEER  = 200  # Maximum paired chat history entries (stored on client)
+REACTIVATE_CHAT_COUNTDOWN  = 86400  # seconds (24h) in-RAM cooldown window before an address can reactivate chat
 
 
 # =============================================================================

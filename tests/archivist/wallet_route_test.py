@@ -198,3 +198,62 @@ def test_stor_get_by_art_file_too_large(server):
         res = handle_wallet_rpc(server, {"type": "STOR_GET_BY_ART", "graffiti_id": "gid1", "include_data": True})
         assert res["status"] == "error"
         assert res["reason"] == "file_too_large"
+
+
+@patch("archivist.wallet_route.GRAFFITI.validate_graffiti_file", side_effect=lambda s, m, f: (m or "text/plain"))
+def test_stor_init_rejects_duplicate_permanent_graffiti(mock_val, server):
+    sha = "b" * 64
+    mroot = "c" * 64
+    server.index["art_map"]["art_dup"] = "gid_permanent"
+    server.index["files"]["gid_permanent"] = {
+        "state": "stored",
+        "paid": True,
+        "sha256": sha,
+        "mroot": mroot,
+    }
+    server.db.has_final.return_value = True
+
+    msg = {
+        "type": "STOR_INIT",
+        "graffiti_id": "gid_new",
+        "size_bytes": 100,
+        "sha256": sha,
+        "mime": "text/plain",
+        "art_id": "art_dup",
+        "mroot": mroot,
+        "mchunk": 50,
+        "mcount": 2,
+    }
+    res = handle_wallet_rpc(server, msg)
+    assert res["status"] == "rejected"
+    assert res["reason"] == "duplicate_graffiti"
+
+
+def test_stor_commit_rejects_duplicate_permanent_graffiti(server):
+    sha = "d" * 64
+    mroot = "e" * 64
+    server.index["art_map"]["art_dup2"] = "gid_final"
+    server.index["files"]["gid_final"] = {
+        "state": "stored",
+        "paid": True,
+        "sha256": sha,
+        "mroot": mroot,
+    }
+    server.index["files"]["gid_pending"] = {
+        "state": "appending",
+        "paid": False,
+        "art_id": "art_dup2",
+        "sha256": sha,
+        "mroot": mroot,
+        "size_bytes": 100,
+    }
+    server.db.has_final.side_effect = lambda gid: gid == "gid_final"
+
+    msg = {
+        "type": "STOR_COMMIT",
+        "graffiti_id": "gid_pending",
+    }
+    res = handle_wallet_rpc(server, msg)
+    assert res["status"] == "rejected"
+    assert res["reason"] == "duplicate_graffiti"
+

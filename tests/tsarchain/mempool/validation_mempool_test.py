@@ -507,6 +507,102 @@ class TestTxMempoolValidator:
             reg_mock.get_post.return_value = {"stats": {"pool_balance": 1000, "last_paid_epoch": 4}}
             assert validator.validate_transaction(tx, {})
 
+    def test_enforce_mempool_post_limit_rejects_on_chain_duplicate(self, validator):
+        sha = "1" * 64
+        mroot = "2" * 64
+        art_id = "art_onchain_dup"
+
+        reg_mock = MagicMock()
+        reg_mock.get_post.return_value = {
+            "art_id": art_id,
+            "sha256": sha,
+            "mroot": mroot,
+        }
+        validator.utxo._graffiti_registry = reg_mock
+
+        out = MagicMock()
+        out.script_pubkey = MagicMock()
+        tx = MagicMock()
+        tx.txid = "tx123"
+        tx.outputs = [out]
+
+        with patch("tsarchain.mempool.validation.GRAFFITI.parse_from_script") as mock_parse:
+            mock_parse.return_value = {
+                "event": "POST",
+                "art_id": art_id,
+                "sha256": sha,
+                "mroot": mroot,
+                "size": 100,
+            }
+            res = validator._enforce_mempool_post_limit(tx)
+            assert res is False
+            assert validator.last_error_reason == "graffiti_duplicate_post"
+
+    def test_enforce_mempool_post_limit_rejects_mempool_duplicate(self, validator):
+        sha = "3" * 64
+        mroot = "4" * 64
+        art_id = "art_mempool_dup"
+
+        reg_mock = MagicMock()
+        reg_mock.get_post.return_value = None
+        validator.utxo._graffiti_registry = reg_mock
+
+        pool_out = MagicMock()
+        pool_tx = MagicMock()
+        pool_tx.txid = "tx_existing"
+        pool_tx.outputs = [pool_out]
+        validator._pool = {"tx_existing": pool_tx}
+
+        new_out = MagicMock()
+        new_tx = MagicMock()
+        new_tx.txid = "tx_new"
+        new_tx.outputs = [new_out]
+
+        with patch("tsarchain.mempool.validation.GRAFFITI.parse_from_script") as mock_parse:
+            mock_parse.return_value = {
+                "event": "POST",
+                "art_id": art_id,
+                "sha256": sha,
+                "mroot": mroot,
+                "size": 100,
+            }
+            res = validator._enforce_mempool_post_limit(new_tx)
+            assert res is False
+            assert validator.last_error_reason == "graffiti_duplicate_post"
+
+    def test_validate_graffiti_output_rejects_on_chain_duplicate(self, validator):
+        sha = "5" * 64
+        mroot = "6" * 64
+        art_id = "7" * 64
+
+        reg_mock = MagicMock()
+        reg_mock.get_post.return_value = {
+            "art_id": art_id,
+            "sha256": sha,
+            "mroot": mroot,
+        }
+        validator.utxo._graffiti_registry = reg_mock
+
+        meta = {
+            "event": "POST",
+            "art_id": art_id,
+            "sha256": sha,
+            "mroot": mroot,
+            "mchunk": 50,
+            "mcount": 2,
+            "size": 100,
+            "mime": "image/jpeg",
+            "storer": "tsar1qv9skzctpv9skzctpv9skzctpv9skzctphjeeqv",
+            "receipt": "rcpt1",
+        }
+        from tsarchain.contracts import graffiti as GRAFF
+        spk_obj = GRAFF.build_script(meta)
+
+        res = validator._validate_graffiti_output(spk_obj)
+        assert res is False
+        assert validator.last_error_reason == "graffiti_duplicate_post"
+
+
 
 def test_txpool_len_and_size():
     from tsarchain.mempool.pool import TxPool

@@ -161,6 +161,11 @@ def test_process_message_user(mock_handle, network):
     res3 = process_message(network, {"type": "PING"}, ("127.0.0.1", 1234))
     assert res3 == {"error": "Unknown message type"}
 
+    # Test CHAT_CHECK_PREKEYS is in USER_RPC_TYPES and dispatched to user_rpc
+    mock_handle.return_value = {"type": "CHAT_PREKEYS_STATUS"}
+    res_chat = process_message(network, {"type": "CHAT_CHECK_PREKEYS", "address": "tsar1qtest"}, ("127.0.0.1", 1234))
+    assert res_chat == {"type": "CHAT_PREKEYS_STATUS"}
+
 
 def test_overlay_realtime_mempool_stats(network):
     # Invalid snapshot

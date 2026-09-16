@@ -40,7 +40,7 @@ Rate limits are enforced at two tiers:
 | **Networking** | `PING`, `GET_PEERS`, `STOR_LIST` |
 | **Transactions & Mempool** | `NEW_TX`, `CREATE_TX`, `CREATE_TX_MULTI`, `GET_MEMPOOL` |
 | **Blockchain Explorer** | `GET_BALANCES`, `GET_NETWORK_INFO`, `GET_BLOCK`, `GET_BLOCK_RANGE`, `GET_TX_HISTORY`, `GET_TX_DETAIL`, `GET_TOTAL_UTXO` |
-| **Encrypted P2P Chat** | `CHAT_REGISTER`, `CHAT_LOOKUP_PUB`, `CHAT_PRESENCE`, `CHAT_GET_PREKEY`, `CHAT_PUBLISH_PREKEYS`, `CHAT_SEND`, `CHAT_READ`, `CHAT_PULL`, `CHAT_RELAY` |
+| **Encrypted P2P Chat** | `CHAT_REGISTER`, `CHAT_LOOKUP_PUB`, `CHAT_CHECK_PREKEYS`, `DEACTIVATE_CHAT`, `CHAT_PRESENCE`, `CHAT_GET_PREKEY`, `CHAT_PUBLISH_PREKEYS`, `CHAT_SEND`, `CHAT_READ`, `CHAT_PULL`, `CHAT_RELAY` |
 | **Graffiti Protocol** | `GRAFFITI_GET_POSTS`, `GRAFFITI_GET_COMMENTS`, `GRAFFITI_GET_ART`, `GRAFFITI_GET_PAYOUTS` |
 
 ---
@@ -273,13 +273,84 @@ Provides decentralized, end-to-end encrypted messaging via TsarChain's Signal-co
 ### Endpoints Overview
 1. **`CHAT_REGISTER`**: Registers account spend public key and identity public key with dual presence signatures.
 2. **`CHAT_LOOKUP_PUB`**: Resolves an on-chain Tsar address to its chat identity public key.
-3. **`CHAT_PRESENCE`**: Updates node heartbeat presence for online routing.
-4. **`CHAT_PUBLISH_PREKEYS`**: Publishes Signed Prekeys (SPK) and One-Time Prekeys (OPKs) for asynchronous X3DH key agreements.
-5. **`CHAT_GET_PREKEY`**: Fetches a prekey bundle to initiate an encrypted session with a peer.
-6. **`CHAT_SEND`**: Delivers an encrypted message envelope to the recipient's node mailbox.
-7. **`CHAT_PULL`**: Fetches pending incoming encrypted envelopes.
-8. **`CHAT_READ`**: Marks message IDs as delivered/read.
-9. **`CHAT_RELAY`**: Multi-hop onion routing relay for privacy-preserving message transport.
+3. **`CHAT_CHECK_PREKEYS`**: Read-only status query checking if an address has active prekeys and remaining OPKs in LMDB without consuming OPKs.
+4. **`DEACTIVATE_CHAT`**: Cryptographically authenticated deregistration that deletes prekeys from LMDB and purges all pending mailbox queues in RAM.
+5. **`CHAT_PRESENCE`**: Updates node heartbeat presence for online routing.
+6. **`CHAT_PUBLISH_PREKEYS`**: Publishes Signed Prekeys (SPK) and One-Time Prekeys (OPKs) for asynchronous X3DH key agreements.
+7. **`CHAT_GET_PREKEY`**: Fetches a prekey bundle to initiate an encrypted session with a peer (consumes 1 OPK).
+8. **`CHAT_SEND`**: Delivers an encrypted message envelope to the recipient's node mailbox.
+9. **`CHAT_PULL`**: Fetches pending incoming encrypted envelopes.
+10. **`CHAT_READ`**: Marks message IDs as delivered/read.
+11. **`CHAT_RELAY`**: Multi-hop onion routing relay for privacy-preserving message transport.
+
+---
+
+### Endpoint Specification: `CHAT_CHECK_PREKEYS`
+A non-destructive, read-only endpoint that inspects whether a wallet address has a valid prekey bundle (`ik`, `spk`, and `opk_list`) stored in the node's LMDB `chat_prekeys` database. Unlike `CHAT_GET_PREKEY`, this method **never consumes or pops OPKs**, making it safe for wallet import recovery and sovereign status verification.
+
+#### Request Payload
+```json
+{
+  "type": "CHAT_CHECK_PREKEYS",
+  "address": "tsar1qalice..."
+}
+```
+
+#### Response Payload
+```json
+{
+  "type": "CHAT_PREKEYS_STATUS",
+  "address": "tsar1qalice...",
+  "registered": true,
+  "has_ik": true,
+  "has_spk": true,
+  "opk_count": 8,
+  "last_seen": 1726000000
+}
+```
+
+- `registered` *(bool)*: `true` if both `ik` and authenticated `spk` exist.
+- `has_ik` *(bool)*: Whether identity key is present.
+- `has_spk` *(bool)*: Whether signed prekey and signature are present.
+- `opk_count` *(int)*: Current quantity of unconsumed one-time prekeys remaining in pool.
+- `last_seen` *(int | null)*: Unix epoch timestamp of last presence or prekey update.
+- `cooldown_remaining_s` *(int)*: Seconds remaining in reactivation cooldown if recently deactivated (0 if none).
+
+---
+
+### Endpoint Specification: `DEACTIVATE_CHAT`
+A cryptographically authenticated endpoint used by sovereign wallets to deregister from the chat network. To prevent Denial of Service (DoS) attacks, the request requires a valid Secp256k1 signature over `b"DEACTIVATE_CHAT|" + address.encode() + b"|" + str(ts).encode()` signed by the address's spend private key.
+
+Upon verification, the node:
+1. Deletes the prekey bundle from LMDB `chat_prekeys`.
+2. Evicts active heartbeat presence and spend pubkey mapping from RAM.
+3. Purges all queued offline envelopes in the recipient's in-memory mailbox (`chat_mailbox`).
+4. Enforces an in-RAM cooldown window (`CFG.REACTIVATE_CHAT_COUNTDOWN = 86400`, 24 hours) during which `CHAT_REGISTER` and `CHAT_PUBLISH_PREKEYS` for this address will be rejected with `{"error": "reactivate_cooldown", "remaining_s": ...}`.
+5. In addition, `CHAT_SEND` addressed to this address will be immediately rejected with `{"type": "CHAT_ACK", "status": "rejected", "reason": "recipient_not_registered"}` to prevent offline queue accumulation for deactivated accounts.
+
+#### Request Payload
+```json
+{
+  "type": "DEACTIVATE_CHAT",
+  "address": "tsar1qalice...",
+  "spend_pub": "02abcdef1234567890...",
+  "ts": 1773460000,
+  "deactivate_sig": "3045022100... or raw 64-byte compact hex"
+}
+```
+
+#### Response Payload
+```json
+{
+  "type": "CHAT_ACK",
+  "status": "ok",
+  "deactivated": true,
+  "address": "tsar1qalice..."
+}
+```
+
+- `status` *(str)*: `"ok"` on success. Error statuses: `"bad_address"`, `"bad_pubkey"`, `"time_drift"`, `"bad_sig"`, or `"bad_request"`.
+- `deactivated` *(bool)*: Always `true` on successful completion.
 
 ---
 
@@ -313,15 +384,15 @@ The node operates purely as a **Blind Relay & Ephemeral Mailbox Router** with ze
 #### 2. Offline Message Mailbox Queue Management (`chat_mailbox`)
 * **Data Structure**: In-memory FIFO queue per recipient: `self.chat_mailbox[addr] = collections.deque()`.
 * **Strict Capacity Limits**:
-  - `CFG.CHAT_MAILBOX_MAX = 250`: Maximum queued messages per recipient address.
-  - `CFG.CHAT_GLOBAL_QUEUE_MAX = 20_000`: Maximum global accumulation across all registered users on the node.
+  - `CFG.CHAT_MAILBOX_MAX = 1000`: Maximum queued messages per recipient address.
+  - `CFG.CHAT_GLOBAL_QUEUE_MAX = 50_000`: Maximum global accumulation across all registered users on the node.
   - **Full Capacity Behavior**: If limits are reached, `mailbox_put` returns `{"type": "CHAT_ACK", "status": "mailbox_full"}` and the envelope is **dropped**. The sender receives an immediate visual failure status in the wallet UI (`× mailbox full`).
 * **Lifecycle & Immediate FIFO Drain (`dq.popleft()`)**:
   - **Recipient Offline**: Transit payloads are held in node RAM.
   - **Recipient Online (`CHAT_PULL`)**: The node executes `dq.popleft()` for each retrieved message. The payload is **permanently and immediately deleted from node RAM on delivery**.
   - **Quota Reset**: The recipient's mailbox slot immediately returns to `0 / 250`.
 * **Asynchronous Garbage Collection (`gc_mailboxes`)**:
-  - Messages carry a time-to-live of `CFG.CHAT_TTL_S = 86400` (24 hours).
+  - Messages carry a time-to-live of `CFG.CHAT_TTL_S = 2 * 86400` (48 hours).
   - Background discovery loop automatically sweeps expired messages asynchronously, keeping client `CHAT_PULL` response latency minimal (sub-millisecond).
 * **Privacy & Anti-Forensic Guarantee**:
   - The mailbox is **In-Memory Ephemeral (Zero Disk/LMDB Writes)**.

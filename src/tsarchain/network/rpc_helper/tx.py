@@ -286,6 +286,29 @@ class TxHandler(NetworkHandlerProxy):
                 raise ValueError("graffiti_size_invalid")
             if size_val > int(CFG.GRAFFITI_MAX_SIZE_BYTES):
                 raise ValueError("graffiti_size_exceeds_limit")
+            art_id = str(meta.get("art_id") or "").strip().lower()
+            if not art_id:
+                sha_hex = str(meta.get("sha256") or "").strip().lower()
+                creator = str(meta.get("creator") or "").strip().lower()
+                art_id = GRAFF.compute_art_id(sha_hex, creator) if sha_hex and creator else ""
+            if art_id:
+                cur_sha = str(meta.get("sha256") or "").strip().lower()
+                cur_mroot = str(meta.get("mroot") or meta.get("merkle_root") or "").strip().lower()
+                reg = None
+                try:
+                    reg = self.broadcast.utxodb._graffiti_registry
+                except AttributeError:
+                    pass
+                if reg:
+                    try:
+                        post = reg.get_post(art_id)
+                    except (AttributeError, TypeError):
+                        post = None
+                    if type(post) is dict:
+                        ex_sha = str(post.get("sha256") or "").strip().lower()
+                        ex_mroot = str(post.get("mroot") or post.get("merkle_root") or "").strip().lower()
+                        if cur_sha and cur_mroot and ex_sha == cur_sha and ex_mroot == cur_mroot:
+                            raise ValueError("graffiti_duplicate_post")
             
         elif event == "COMMENT":
             comment_len = int(meta.get("comment_len", 0))

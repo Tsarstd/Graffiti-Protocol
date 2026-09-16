@@ -282,6 +282,62 @@ def _determine_missing_blocks(self, headers: List[dict]) -> List[int]:
     return sorted(set(missing))
 
 
+class _ReorgCandidate:
+    def __init__(self, chain: List[Block]):
+        self.chain = chain
+        self.total_supply = 0
+
+
+def _apply_reorg_from_sync(self, peer: Tuple[str, int], blocks: List[Block]) -> bool:
+    if not blocks:
+        return False
+
+    with self.broadcast.lock:
+        local_chain = list(self.broadcast.blockchain.chain)
+
+    first_b = blocks[0]
+    fork_h = int(first_b.height or 0)
+    if fork_h <= 0 or fork_h > len(local_chain):
+        log.warning("[_apply_reorg_from_sync] Invalid fork height %d (local chain len=%d)", fork_h, len(local_chain))
+        return False
+
+    parent_h = fork_h - 1
+    parent = local_chain[parent_h]
+    parent_hash_fn = parent.hash
+    parent_hash = parent_hash_fn() if callable(parent_hash_fn) else parent_hash_fn
+    if first_b.prev_block_hash != parent_hash:
+        got_hex = first_b.prev_block_hash.hex() if type(first_b.prev_block_hash) in (bytes, bytearray) else str(first_b.prev_block_hash or "")
+        exp_hex = parent_hash.hex() if type(parent_hash) in (bytes, bytearray) else str(parent_hash or "")
+        log.warning(
+            "[_apply_reorg_from_sync] Fork root parent mismatch: got %s expected %s",
+            got_hex[:16],
+            exp_hex[:16],
+        )
+        return False
+
+    candidate_chain = local_chain[:fork_h] + blocks
+    candidate = _ReorgCandidate(candidate_chain)
+
+    try:
+        self.broadcast.blockchain.replace_with(candidate)
+    except Exception as exc:
+        log.warning("[_apply_reorg_from_sync] Reorg rejected from %s: %s", peer, exc)
+        return False
+
+    last_b = candidate_chain[-1]
+    last_hash_fn = last_b.hash
+    tip_hash = last_hash_fn() if callable(last_hash_fn) else last_hash_fn
+    tip_hex = tip_hash.hex() if type(tip_hash) in (bytes, bytearray) else str(tip_hash or "")
+    log.info(
+        "[_apply_reorg_from_sync] Reorg SUCCESS from %s! Tip updated to height=%d hash=%s",
+        peer,
+        last_b.height,
+        tip_hex[:16],
+    )
+    self.broadcast.broadcast_block(last_b, self.peers)
+    return True
+
+
 def _download_blocks(self, peer: Tuple[str, int], heights: List[int]) -> Tuple[int, float]:
     start_time = time.time()
     if not heights:
@@ -290,6 +346,12 @@ def _download_blocks(self, peer: Tuple[str, int], heights: List[int]) -> Tuple[i
     unique_heights = sorted({int(h) for h in heights if type(h) is int})
     if not unique_heights:
         return 0, 0.0
+
+    with self.broadcast.lock:
+        local_chain_len = len(self.broadcast.blockchain.chain)
+
+    is_reorg = unique_heights[0] < local_chain_len
+    reorg_blocks: List[Block] = []
 
     batch_size = max(1, int(CFG.BLOCK_DOWNLOAD_BATCH_MAX))
     total_applied = 0
@@ -322,11 +384,15 @@ def _download_blocks(self, peer: Tuple[str, int], heights: List[int]) -> Tuple[i
                 blk = Block.from_storage_bytes(raw[offset : offset + blen])
                 offset += blen
                 blocks.append(blk)
-            total_applied, elapsed, stop = _process_downloaded_blocks(
-                self, peer, blocks, start_time, total_applied
-            )
-            if stop:
-                return total_applied, elapsed
+
+            if is_reorg:
+                reorg_blocks.extend(blocks)
+            else:
+                total_applied, elapsed, stop = _process_downloaded_blocks(
+                    self, peer, blocks, start_time, total_applied
+                )
+                if stop:
+                    return total_applied, elapsed
 
         elif resp_type == "SYNC_REJECT":
             retry = float(resp.get("retry_after", 30.0))
@@ -339,6 +405,15 @@ def _download_blocks(self, peer: Tuple[str, int], heights: List[int]) -> Tuple[i
         else:
             log.info("[_download_blocks] %s returned unexpected type=%s", peer, resp_type)
             break
+
+    if is_reorg:
+        if reorg_blocks:
+            reorg_blocks.sort(key=lambda b: int(b.height or 0))
+            ok = _apply_reorg_from_sync(self, peer, reorg_blocks)
+            if ok:
+                return len(reorg_blocks), time.time() - start_time
+        self.request_sync(fast=True)
+        return 0, time.time() - start_time
 
     elapsed = time.time() - start_time
     return total_applied, elapsed

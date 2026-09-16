@@ -163,25 +163,25 @@ def test_server_api_routes():
                     req_thumb = urllib.request.Request(f"{base_url}/api/graffiti/{art_id}/thumbnail")
                     with urllib.request.urlopen(req_thumb) as resp:
                         assert resp.status == 200
-                        assert resp.headers.get("Content-Type") == "image/jpeg"
+                        assert resp.headers.get("Content-Type") == "image/webp"
                         assert "max-age=31536000" in resp.headers.get("Cache-Control", "")
                         body = resp.read()
                         assert len(body) > 0
-                        # Verify decoded thumbnail dimensions <= 128
+                        # Verify decoded thumbnail dimensions <= 160
                         thumb_pil = PILImage.open(io.BytesIO(body))
-                        assert thumb_pil.size[0] <= 128 and thumb_pil.size[1] <= 128
+                        assert thumb_pil.size[0] <= 160 and thumb_pil.size[1] <= 160
 
         # 15b. Cache hit & HEAD on thumbnail
         req_thumb_cached = urllib.request.Request(f"{base_url}/api/graffiti/{art_id}/thumbnail")
         with urllib.request.urlopen(req_thumb_cached) as resp:
             assert resp.status == 200
-            assert resp.headers.get("Content-Type") == "image/jpeg"
+            assert resp.headers.get("Content-Type") == "image/webp"
             assert "max-age=31536000" in resp.headers.get("Cache-Control", "")
 
         req_thumb_head = urllib.request.Request(f"{base_url}/api/graffiti/{art_id}/thumbnail", method="HEAD")
         with urllib.request.urlopen(req_thumb_head) as resp:
             assert resp.status == 200
-            assert resp.headers.get("Content-Type") == "image/jpeg"
+            assert resp.headers.get("Content-Type") == "image/webp"
             assert len(resp.read()) == 0
 
         # 15c. Invalid art_id & 404 media_not_found
@@ -209,10 +209,11 @@ def test_server_api_routes():
         httpd.server_close()
         import os
         from web.Backend.src.routes.explorer_routes import CACHE_DIR
-        test_thumb_file = os.path.join(CACHE_DIR, "thumbnails", f"{art_id}.jpg")
-        if os.path.isfile(test_thumb_file):
-            with contextlib.suppress(OSError):
-                os.remove(test_thumb_file)
+        for ext in (".webp", ".jpg"):
+            test_thumb_file = os.path.join(CACHE_DIR, "thumbnails", f"{art_id}{ext}")
+            if os.path.isfile(test_thumb_file):
+                with contextlib.suppress(OSError):
+                    os.remove(test_thumb_file)
 
 
 def test_create_handler_class_default_cfg():
@@ -247,5 +248,107 @@ def test_handler_suppresses_abrupt_disconnect():
         handler.handle()
     with patch.object(BaseHTTPRequestHandler, "handle", side_effect=ConnectionAbortedError(103, "Connection aborted")):
         handler.handle()
+
+
+def test_get_video_duration():
+    from unittest.mock import MagicMock
+    from web.Backend.src.server import get_video_duration
+
+    # 1. ffprobe success
+    mock_res = MagicMock(returncode=0, stdout="42.50\n")
+    with patch("subprocess.run", return_value=mock_res):
+        dur = get_video_duration("dummy.mp4")
+        assert dur == 42.50
+
+    # 2. ffmpeg fallback success (ffprobe fails with code 1, ffmpeg succeeds with stderr Duration)
+    mock_res_err = MagicMock(returncode=1, stderr="Duration: 00:01:30.00, start: 0.000000, bitrate: 1200 kb/s")
+    with patch("subprocess.run", side_effect=[MagicMock(returncode=1, stdout=""), mock_res_err]):
+        dur = get_video_duration("dummy.mp4")
+        assert dur == 90.0
+
+    # 3. No tools / process error
+    with patch("subprocess.run", side_effect=FileNotFoundError):
+        assert get_video_duration("dummy.mp4") is None
+
+
+def test_generate_video_thumbnail_webp_midpoint(tmp_path):
+    from web.Backend.src.server import generate_video_thumbnail_webp
+
+    out_webp = str(tmp_path / "thumb.webp")
+
+    # Mock duration = 20.0s -> midpoint = 10.0s
+    with patch("web.Backend.src.server.get_video_duration", return_value=20.0):
+        def fake_run(cmd, **kwargs):
+            # Verify midpoint seeking -ss 10.00
+            assert "-ss" in cmd
+            ss_idx = cmd.index("-ss")
+            assert cmd[ss_idx + 1] == "10.00"
+            assert "-an" in cmd
+            assert "-c:v" in cmd and "libwebp" in cmd
+            assert "-pix_fmt" in cmd and "yuv420p" in cmd
+            assert "-vframes" in cmd and cmd[cmd.index("-vframes") + 1] == "11"
+            # write dummy file
+            with open(out_webp, "wb") as f:
+                f.write(b"RIFFdummyWEBP")
+            from unittest.mock import MagicMock
+            return MagicMock(returncode=0)
+
+        with patch("subprocess.run", side_effect=fake_run):
+            ok = generate_video_thumbnail_webp("input.mp4", out_webp)
+            assert ok is True
+
+
+def test_video_thumbnail_benchmark_threshold_warning(tmp_path):
+    from web.Backend.src.server import generate_video_thumbnail_webp
+
+    out_webp = str(tmp_path / "thumb.webp")
+    with patch("web.Backend.src.server.get_video_duration", return_value=10.0):
+        def slow_run(cmd, **kwargs):
+            time.sleep(0.01)  # small sleep
+            with open(out_webp, "wb") as f:
+                f.write(b"RIFFWEBP")
+            from unittest.mock import MagicMock
+            return MagicMock(returncode=0)
+
+        # Test benchmark warning when threshold is set low
+        with patch("subprocess.run", side_effect=slow_run):
+            with patch("tsarchain.utils.benchmarks.log.warning") as mock_warn:
+                # Patch threshold to 1.0ms to simulate spike warning
+                from tsarchain.utils.benchmarks import benchmark
+                wrapped = benchmark("video_thumbnail_webp", threshold_ms=1.0)(lambda: slow_run(None))
+                wrapped()
+                mock_warn.assert_called_once()
+                assert "video_thumbnail_webp" in mock_warn.call_args[0][1]
+
+
+def test_disconnect_handling_in_media_and_thumbnail(tmp_path):
+    from unittest.mock import MagicMock
+    handler_cls = create_handler_class(MagicMock())
+    handler = handler_cls.__new__(handler_cls)
+    dummy_file = str(tmp_path / "test.mp4")
+    with open(dummy_file, "wb") as f:
+        f.write(b"0" * 1024)
+
+    # 1. _serve_local_file on ConnectionResetError
+    handler.headers = {}
+    handler.wfile = MagicMock()
+    handler.wfile.write.side_effect = ConnectionResetError(104, "Connection reset by peer")
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler._set_cors_headers = MagicMock()
+    with patch("web.Backend.src.server.log.warning") as mock_warn:
+        res = handler._serve_local_file(dummy_file, 1024, {})
+        assert res is True
+        mock_warn.assert_not_called()
+
+    # 2. _serve_thumbnail_file on BrokenPipeError
+    handler.wfile.write.side_effect = BrokenPipeError(32, "Broken pipe")
+    with patch("web.Backend.src.server.log.warning") as mock_warn:
+        handler._serve_thumbnail_file(dummy_file)
+        mock_warn.assert_not_called()
+
+
+
 
 

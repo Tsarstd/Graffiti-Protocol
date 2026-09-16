@@ -18,7 +18,7 @@ _BLOCK_HEIGHT_REGEX = re.compile(r"^\d{1,7}$")
 _RANGE_REGEX = re.compile(r"^bytes=(\d*)-(\d*)$")
 
 _CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-_PROJECT_ROOT = os.path.abspath(os.path.join(_CURRENT_DIR, "..", "..", "..", ".."))
+_PROJECT_ROOT = os.path.abspath(os.path.join(_CURRENT_DIR, "..", "..", "..", "..", ".."))
 CACHE_DIR = os.path.abspath(os.path.join(_PROJECT_ROOT, "data", "web", "graffiti_cache"))
 
 GRAFFITI_CACHE_TTL_SEC = 6 * 60 * 60    # 6 hours TTL for server disk cache

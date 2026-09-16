@@ -21,6 +21,7 @@ def init_chat_state(self) -> None:
     self.chat_seen_mid = {}
     self.chat_seen_max = 512
     self.chat_pull_seen = {}
+    self.chat_deactivated_cd = {}
     self.rl_addr = {}
     self.rl_ip = {}
     self.backoff_until = {}

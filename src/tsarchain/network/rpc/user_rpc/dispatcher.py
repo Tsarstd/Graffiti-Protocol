@@ -40,6 +40,8 @@ HANDLER_MAP = {
     # Chat
     "CHAT_REGISTER": CHT.chat_register,
     "CHAT_LOOKUP_PUB": CHT.chat_lookup_pub,
+    "CHAT_CHECK_PREKEYS": CHT.chat_check_prekeys,
+    "DEACTIVATE_CHAT": CHT.chat_deactivate,
     "CHAT_PRESENCE": CHT.chat_presence,
     "CHAT_GET_PREKEY": CHT.chat_get_prekey,
     "CHAT_PUBLISH_PREKEYS": CHT.chat_publish_prekeys,

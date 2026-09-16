@@ -12,7 +12,7 @@ function Print-Warn {
 }
 
 # 1. INSTALL RUST (via rustup)
-Print-Step "1/8: Checking/Installing Rust..."
+Print-Step "1/9: Checking/Installing Rust..."
 if (!(Get-Command "cargo" -ErrorAction SilentlyContinue)) {
     Write-Host "Rust not found. Downloading and installing via rustup..."
     Invoke-WebRequest -Uri "https://win.rustup.rs" -OutFile "rustup-init.exe"
@@ -24,7 +24,7 @@ if (!(Get-Command "cargo" -ErrorAction SilentlyContinue)) {
 }
 
 # 2. INSTALL CMAKE
-Print-Step "2/8: Checking/Installing CMake..."
+Print-Step "2/9: Checking/Installing CMake..."
 if (!(Get-Command "cmake" -ErrorAction SilentlyContinue)) {
     Write-Host "CMake not found. Installing via winget..."
     winget install -e --id Kitware.CMake --accept-source-agreements --accept-package-agreements
@@ -34,7 +34,7 @@ if (!(Get-Command "cmake" -ErrorAction SilentlyContinue)) {
 }
 
 # 3. INSTALL PYTHON
-Print-Step "3/8: Checking/Installing Python..."
+Print-Step "3/9: Checking/Installing Python..."
 if (!(Get-Command "python" -ErrorAction SilentlyContinue)) {
     Write-Host "Python not found. Installing Python 3.12 via winget..."
     winget install -e --id Python.Python.3.12 --accept-source-agreements --accept-package-agreements
@@ -44,7 +44,7 @@ if (!(Get-Command "python" -ErrorAction SilentlyContinue)) {
 }
 
 # 4. INSTALL WEBSITE REQUIREMENTS ( Frontend Explorer )
-Print-Step "4/8: Checking/Installing Node.js & Frontend Explorer Dependencies..."
+Print-Step "4/9: Checking/Installing Node.js & Frontend Explorer Dependencies..."
 if (!(Get-Command "npm" -ErrorAction SilentlyContinue)) {
     Write-Host "npm not found. Installing Node.js via winget..."
     winget install -e --id OpenJS.NodeJS --accept-source-agreements --accept-package-agreements
@@ -60,8 +60,18 @@ if (Get-Command "npm" -ErrorAction SilentlyContinue) {
     Print-Warn "npm is still not available. Please install Node.js manually. Skipping frontend dependencies."
 }
 
-# 5. SETUP VIRTUAL ENVIRONMENT
-Print-Step "5/8: Setting up Python Virtual Environment (.venv)..."
+# 5. INSTALL FFMPEG (for video thumbnails in Web Backend)
+Print-Step "5/9: Checking/Installing FFmpeg (for video thumbnails)..."
+if (!(Get-Command "ffmpeg" -ErrorAction SilentlyContinue)) {
+    Write-Host "ffmpeg not found. Installing via winget..."
+    winget install -e --id Gyan.FFmpeg --accept-source-agreements --accept-package-agreements
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+} else {
+    Write-Host "ffmpeg is already installed."
+}
+
+# 6. SETUP VIRTUAL ENVIRONMENT
+Print-Step "6/9: Setting up Python Virtual Environment (.venv)..."
 if (!(Test-Path ".venv")) {
     python -m venv .venv
     Write-Host "Virtual environment created."
@@ -69,16 +79,16 @@ if (!(Test-Path ".venv")) {
     Write-Host "Virtual environment already exists."
 }
 
-# 6. INSTALL MATURIN
-Print-Step "6/8: Installing Maturin..."
+# 7. INSTALL MATURIN
+Print-Step "7/9: Installing Maturin..."
 & ".\.venv\Scripts\python.exe" -m pip install --upgrade pip maturin
 
-# 7. INSTALL REQUIREMENTS
-Print-Step "7/8: Installing Python Requirements..."
+# 8. INSTALL REQUIREMENTS
+Print-Step "8/9: Installing Python Requirements..."
 & ".\.venv\Scripts\pip.exe" install -r requirements.txt
 
-# 8. BUILD NATIVE EXTENSION
-Print-Step "8/8: Building Native Extension (tsarcore_native)..."
+# 9. BUILD NATIVE EXTENSION
+Print-Step "9/9: Building Native Extension (tsarcore_native)..."
 Push-Location "tsarcore_native"
 & "..\.venv\Scripts\maturin.exe" develop --release --features parallel
 Pop-Location
