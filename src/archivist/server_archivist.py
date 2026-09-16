@@ -9,6 +9,7 @@ import json
 import socket
 import base64
 import threading
+import contextlib
 from typing import Any, Dict, Optional, Tuple
 
 # ---------------- Local Project ----------------
@@ -155,7 +156,30 @@ class StorageServer:
 
         return {"status": "ok", "expired": expired}
 
-    def generate_retention_proof(self, graffiti_id: str, art_id: str = "", tip_height: int = 0) -> Dict[str, Any]:
+    def prune_stale_incoming(self, max_age_sec: int = 600) -> int:
+        now = int(time.time())
+        files = self.index.get("files", {}) or {}
+        stale_keys = []
+        for gid, meta in files.items():
+            state = str(meta.get("state", "")).lower()
+            if state in ("receiving", "appending") and not meta.get("paid"):
+                created = int(meta.get("created_ts", 0) or 0)
+                if created > 0 and (now - created) > max_age_sec:
+                    stale_keys.append(gid)
+        pruned = 0
+        for gid in stale_keys:
+            p = files.get(gid, {}).get("path")
+            if p and os.path.isfile(p):
+                with contextlib.suppress(OSError):
+                    os.unlink(p)
+            files.pop(gid, None)
+            pruned += 1
+        if pruned:
+            self._save_index()
+            log.info("[STOR_PRUNE] Pruned %s stale incoming upload(s)", pruned)
+        return pruned
+
+    def generate_retention_proof(self, graffiti_id: str, art_id: str = "", tip_height: int = 0, block_hash: str | None = None) -> Dict[str, Any]:
         aid = str(graffiti_id).strip()
         art_norm = str(art_id).strip().lower()
         tip_h = int(tip_height or 0)
@@ -177,7 +201,7 @@ class StorageServer:
             return {"status": "error", "reason": "missing_art_id"}
 
         merkle_chunk = int(CFG.GRAFFITI_PROOF_CHUNK_BYTES)
-        challenge = GRAFFITI.calc_proof_challenge(art_final, size, tip_h, chunk_bytes=merkle_chunk)
+        challenge = GRAFFITI.calc_proof_challenge(art_final, size, tip_h, block_hash=block_hash, chunk_bytes=merkle_chunk)
         offset = int(challenge.get("offset", 0))
         length = int(challenge.get("length", 0))
 

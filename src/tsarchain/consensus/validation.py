@@ -321,6 +321,13 @@ class BlockValidator:
         if epoch >= 0 and not self._validate_payout_proof(meta, epoch, art_id, reg):
             return False
 
+        proof_entry = reg.get_proof(art_id, "", epoch) if reg else None
+        valid_storer = ""
+        if type(proof_entry) is dict:
+            storer_val = proof_entry.get("storer")
+            if type(storer_val) is str:
+                valid_storer = storer_val.strip().lower()
+
         recs = meta.get("recipients")
         if type(recs) is not list or not recs:
             self.blockchain._last_block_validation_error = "payout_no_recipients"
@@ -332,6 +339,9 @@ class BlockValidator:
             amt_req = int(rec.get("amount", 0))
             if not addr or amt_req <= 0:
                 self.blockchain._last_block_validation_error = "payout_bad_recipient"
+                return False
+            if valid_storer and addr != valid_storer:
+                self.blockchain._last_block_validation_error = "payout_recipient_not_authorized_storer"
                 return False
             total_req += amt_req
             if paymap.get(addr, 0) < amt_req:
@@ -346,15 +356,13 @@ class BlockValidator:
 
 
     def _validate_payout_proof(self, meta: dict, epoch: int, art_id: str, reg) -> bool:
-        if reg.get_latest_proof_epoch(art_id) < epoch:
-            proof_epoch = int(meta.get("proof_epoch", -1))
-            if proof_epoch < 0:
-                proof_height = int(meta.get("proof_height", meta.get("height", -1)))
-                if proof_height >= 0:
-                    proof_epoch = GRAFFITI.compute_proof_epoch(proof_height)
-            if proof_epoch < epoch:
-                self.blockchain._last_block_validation_error = "payout_missing_proof"
-                return False
+        if not reg:
+            self.blockchain._last_block_validation_error = "payout_missing_proof"
+            return False
+        latest_epoch = reg.get_latest_proof_epoch(art_id)
+        if latest_epoch is None or latest_epoch < epoch:
+            self.blockchain._last_block_validation_error = "payout_missing_proof"
+            return False
         return True
 
 

@@ -7,6 +7,7 @@ import time
 import math
 import base64
 import hashlib
+import contextlib
 
 from typing import Any, Dict, Optional
 
@@ -54,6 +55,7 @@ def _handle_stor_init(server, msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return {"type": "STOR_ACK", "status": "rejected", "reason": "bad_fields"}
     
     mime = GRAFFITI.validate_graffiti_file(size, mime, fname)
+    server.prune_stale_incoming(max_age_sec=600)
     projected = int(server.index.get("bytes_used", 0)) + size
     if projected > int(CFG.STORAGE_MAX_BYTES):
         return {"type": "STOR_ACK", "status": "rejected", "reason": "storage_full"}
@@ -150,6 +152,11 @@ def _handle_stor_commit(server, msg: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 
         ok, err_reason, actual_size = _verify_file_hash(tmp_path, expected_size, meta.get("sha256"))
         if not ok:
+            if tmp_path and os.path.isfile(tmp_path):
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp_path)
+            server.index.get("files", {}).pop(aid, None)
+            server._save_index()
             return {"type": "STOR_ACK", "status": "rejected", "reason": err_reason}
         
         GRAFFITI.validate_graffiti_file(actual_size, meta.get("mime"), meta.get("filename"))

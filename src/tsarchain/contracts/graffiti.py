@@ -37,7 +37,7 @@ def compute_proof_epoch(height: int) -> int:
     return max(0, h // int(CFG.GRAFFITI_PROOF_EPOCH_BLOCKS))
 
 
-def calc_proof_challenge(art_id: str, size_bytes: int, height: int, *, chunk_bytes: int | None = None) -> Dict[str, int | str]:
+def calc_proof_challenge(art_id: str, size_bytes: int, height: int, *, block_hash: str | None = None, chunk_bytes: int | None = None) -> Dict[str, int | str]:
     """
     Deterministic byte-range challenge for retention proof.
     Returns mapping with epoch, offset, length, and seed hash.
@@ -47,12 +47,17 @@ def calc_proof_challenge(art_id: str, size_bytes: int, height: int, *, chunk_byt
     if size <= 0:
         raise ValueError("bad_size_bytes")
     epoch = compute_proof_epoch(height)
-    seed = hashlib.sha256(b"|".join([
+    seed_parts = [
         CFG.GRAFFITI_MAGIC,
         b"PROOF",
         _strip_art_prefix(art_norm).encode("ascii"),
         str(epoch).encode("ascii"),
-    ])).digest()
+    ]
+    if block_hash:
+        clean_bhash = str(block_hash).strip().lower()
+        if len(clean_bhash) == 64:
+            seed_parts.append(bytes.fromhex(clean_bhash))
+    seed = hashlib.sha256(b"|".join(seed_parts)).digest()
     if chunk_bytes is None:
         chunk_bytes = int(CFG.GRAFFITI_PROOF_CHUNK_BYTES)
     max_len = max(1, int(chunk_bytes))

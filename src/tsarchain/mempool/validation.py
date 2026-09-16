@@ -128,23 +128,16 @@ class TxMempoolValidator:
 
         if epoch >= 0:
             latest_proof = reg.get_latest_proof_epoch(art_id)
-            if latest_proof < epoch:
-                proof_epoch = int(payout_meta.get("proof_epoch", -1))
-                if proof_epoch < 0:
-                    proof_height = int(payout_meta.get("proof_height", payout_meta.get("height", -1)))
-                    if proof_height >= 0:
-                        proof_epoch = GRAFFITI.compute_proof_epoch(proof_height)
-
-                if proof_epoch < epoch:
-                    self.last_error_reason = "payout_missing_proof"
-                    log.warning(
-                        "[mempool] payout reject art=%s reason=%s last_proof=%s epoch=%s",
-                        art_id[:16],
-                        self.last_error_reason,
-                        latest_proof,
-                        epoch,
-                    )
-                    return False
+            if latest_proof is None or latest_proof < epoch:
+                self.last_error_reason = "payout_missing_proof"
+                log.warning(
+                    "[mempool] payout reject art=%s reason=%s last_proof=%s epoch=%s",
+                    art_id[:16],
+                    self.last_error_reason,
+                    latest_proof,
+                    epoch,
+                )
+                return False
         return True
 
     def _validate_payout_recipients_and_balance(self, tx: Tx, payout_meta: dict[str, Any], post: dict[str, Any]) -> bool:
@@ -157,6 +150,15 @@ class TxMempoolValidator:
             self.last_error_reason = "payout_no_recipients"
             log.warning(_PAYOUT_REJECT_MSG, art_id[:16], self.last_error_reason)
             return False
+
+        epoch = int(payout_meta.get("epoch", -1))
+        reg = self.utxo._graffiti_registry or GraffitiRegistry()
+        proof_entry = reg.get_proof(art_id, "", epoch)
+        valid_storer = ""
+        if type(proof_entry) is dict:
+            storer_val = proof_entry.get("storer")
+            if type(storer_val) is str:
+                valid_storer = storer_val.strip().lower()
 
         paymap: dict[str, int] = {}
         for out in tx.outputs or []:
@@ -178,6 +180,16 @@ class TxMempoolValidator:
             if not addr or amt_req <= 0:
                 self.last_error_reason = "payout_bad_recipient"
                 log.warning(_PAYOUT_REJECT_MSG, art_id[:16], self.last_error_reason)
+                return False
+            if valid_storer and addr != valid_storer:
+                self.last_error_reason = "payout_recipient_mismatch"
+                log.warning(
+                    "[mempool] payout reject art=%s reason=%s rec=%s storer=%s",
+                    art_id[:16],
+                    self.last_error_reason,
+                    addr,
+                    valid_storer,
+                )
                 return False
 
             total_req += amt_req
