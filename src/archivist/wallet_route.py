@@ -86,6 +86,11 @@ def _handle_stor_init(server, msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return {"type": "STOR_ACK", "status": "rejected", "reason": err_reason}
     meta.update(parsed_merkle)
     
+    valid_mroot = str(meta.get("mroot") or mroot or "").strip().lower()
+    if _is_permanent_duplicate(server, art_id, sha, valid_mroot):
+        log.warning("[STOR_INIT] Duplicate graffiti rejected via art_map: art_id=%s sha256=%s", art_id[:16], sha[:16])
+        return {"type": "STOR_ACK", "status": "rejected", "reason": "duplicate_graffiti"}
+
     if art_id:
         meta["art_id"] = art_id
         server.index.setdefault("art_map", {})[art_id] = aid
@@ -138,6 +143,14 @@ def _handle_stor_commit(server, msg: Dict[str, Any]) -> Optional[Dict[str, Any]]
     meta = server.index.get("files", {}).get(aid)
     if not meta:
         return {"type": "STOR_ACK", "status": "rejected", "reason": "no_such"}
+    c_art_id = str(meta.get("art_id") or "").strip().lower()
+    c_sha = str(meta.get("sha256") or "").strip().lower()
+    c_mroot = str(meta.get("mroot") or meta.get("merkle_root") or "").strip().lower()
+    if _is_permanent_duplicate(server, c_art_id, c_sha, c_mroot):
+        existing_gid = (server.index.get("art_map") or {}).get(c_art_id)
+        if existing_gid != aid:
+            log.warning("[STOR_COMMIT] Duplicate graffiti rejected via art_map: art_id=%s sha256=%s", c_art_id[:16], c_sha[:16])
+            return {"type": "STOR_ACK", "status": "rejected", "reason": "duplicate_graffiti"}
     try:
         expected_size = int(meta.get("size_bytes", 0))
         tmp_path = meta.get("path")
@@ -307,6 +320,24 @@ def _check_mempool_capacity(server) -> Optional[Dict[str, Any]]:
         if active >= int(CFG.MAX_GRAFFITI_ON_MEMPOOL):
             return {"type": "STOR_ACK", "status": "rejected", "reason": "mempool_graffiti_full"}
     return None
+
+def _is_permanent_duplicate(server, art_id: str, sha: str, mroot: str) -> bool:
+    if not art_id or not sha or not mroot:
+        return False
+    existing_gid = (server.index.get("art_map") or {}).get(art_id)
+    if not existing_gid:
+        return False
+    existing_meta = (server.index.get("files") or {}).get(existing_gid) or {}
+    is_permanent = (
+        existing_meta.get("state") == "stored"
+        or bool(existing_meta.get("paid"))
+        or (server.db.has_final(existing_gid) if server.db else False)
+    )
+    if not is_permanent:
+        return False
+    ex_sha = str(existing_meta.get("sha256") or "").strip().lower()
+    ex_mroot = str(existing_meta.get("merkle_root") or existing_meta.get("mroot") or "").strip().lower()
+    return bool(ex_sha and ex_mroot and ex_sha == sha.strip().lower() and ex_mroot == mroot.strip().lower())
 
 def _validate_merkle_meta(mroot, mchunk, mcount, size) -> tuple[bool, str, dict]:
     if mroot or mchunk or mcount:

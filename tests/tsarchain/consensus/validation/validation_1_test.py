@@ -1185,3 +1185,38 @@ def test_validation_pow_warmup_flag():
         mock_verify.assert_called_once()
 
 
+def test_validate_graffiti_posts_duplicate_rejected():
+    from unittest.mock import MagicMock, patch
+    validator = BlockValidator(blockchain=MagicMock())
+    sha = "8" * 64
+    mroot = "9" * 64
+    art_id = "a" * 64
+
+    reg_mock = MagicMock()
+    reg_mock.get_post.return_value = {
+        "art_id": art_id,
+        "sha256": sha,
+        "mroot": mroot,
+    }
+
+    tx = MagicMock()
+    out = MagicMock()
+    out.script_pubkey = MagicMock()
+    tx.outputs = [out]
+    cb = MagicMock()
+    cb.block_id = art_id
+
+    with patch("tsarchain.consensus.validation.GRAFFITI.parse_from_script") as mock_parse:
+        mock_parse.return_value = {
+            "event": "POST",
+            "art_id": art_id,
+            "sha256": sha,
+            "mroot": mroot,
+            "size": 100,
+        }
+        res = validator._validate_graffiti_posts([MagicMock(), tx], cb, reg=reg_mock)
+        assert res is False
+        assert validator.blockchain._last_block_validation_error == "graffiti_duplicate_post"
+
+
+

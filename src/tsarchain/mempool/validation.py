@@ -375,6 +375,56 @@ class TxMempoolValidator:
                     creator = str(meta.get("creator") or "").strip().lower()
                     art_id = GRAFFITI.compute_art_id(sha_hex, creator) if sha_hex and creator else ""
                 if art_id:
+                    cur_sha = str(meta.get("sha256") or "").strip().lower()
+                    cur_mroot = str(meta.get("mroot") or meta.get("merkle_root") or "").strip().lower()
+
+                    # 1. Fast O(1) direct key lookup against permanent posts in GraffitiRegistry
+                    reg = None
+                    try:
+                        reg = self.utxo._graffiti_registry
+                    except AttributeError:
+                        pass
+                    if not reg:
+                        reg = GraffitiRegistry()
+                    try:
+                        existing_post = reg.get_post(art_id)
+                    except (AttributeError, TypeError):
+                        existing_post = None
+                    if type(existing_post) is dict:
+                        ex_sha = str(existing_post.get("sha256") or "").strip().lower()
+                        ex_mroot = str(existing_post.get("mroot") or existing_post.get("merkle_root") or "").strip().lower()
+                        if cur_sha and cur_mroot and ex_sha == cur_sha and ex_mroot == cur_mroot:
+                            self.last_error_reason = "graffiti_duplicate_post"
+                            log.warning("[_enforce_mempool_post_limit] POST rejected as on-chain duplicate: art_id=%s", art_id[:16])
+                            return False
+
+                    # 2. Fast check against unconfirmed posts in mempool
+                    pool = None
+                    try:
+                        pool = self._pool
+                    except AttributeError:
+                        pass
+                    if type(pool) is dict:
+                        for existing_tx in pool.values():
+                            if existing_tx.txid == tx.txid:
+                                continue
+                            for out in (existing_tx.outputs or []):
+                                if out.script_pubkey is not None:
+                                    p_meta = GRAFFITI.parse_from_script(out.script_pubkey)
+                                    if p_meta and str(p_meta.get("event", "")).upper() == "POST":
+                                        p_art_id = str(p_meta.get("art_id") or "").strip().lower()
+                                        if not p_art_id:
+                                            p_sha = str(p_meta.get("sha256") or "").strip().lower()
+                                            p_creator = str(p_meta.get("creator") or "").strip().lower()
+                                            p_art_id = GRAFFITI.compute_art_id(p_sha, p_creator) if p_sha and p_creator else ""
+                                        if p_art_id and p_art_id == art_id:
+                                            p_ex_sha = str(p_meta.get("sha256") or "").strip().lower()
+                                            p_ex_mroot = str(p_meta.get("mroot") or p_meta.get("merkle_root") or "").strip().lower()
+                                            if cur_sha and cur_mroot and p_ex_sha == cur_sha and p_ex_mroot == cur_mroot:
+                                                self.last_error_reason = "graffiti_duplicate_post"
+                                                log.warning("[_enforce_mempool_post_limit] POST rejected as mempool duplicate: art_id=%s", art_id[:16])
+                                                return False
+
                     try:
                         pool_addr = GRAFFITI.derive_pool_address(art_id)
                         min_fee = GRAFFITI.calc_upload_fee_sats(int(meta.get("size") or 0))
@@ -536,6 +586,30 @@ class TxMempoolValidator:
             if size_val > CFG.GRAFFITI_MAX_SIZE_BYTES:
                 self.last_error_reason = "graffiti_size_exceeds_limit"
                 return False
+            art_id = str(meta.get("art_id") or "").strip().lower()
+            if not art_id:
+                sha_hex = str(meta.get("sha256") or "").strip().lower()
+                creator = str(meta.get("creator") or "").strip().lower()
+                art_id = GRAFFITI.compute_art_id(sha_hex, creator) if sha_hex and creator else ""
+            if art_id:
+                cur_sha = str(meta.get("sha256") or "").strip().lower()
+                cur_mroot = str(meta.get("mroot") or meta.get("merkle_root") or "").strip().lower()
+                reg = None
+                try:
+                    reg = self.utxo._graffiti_registry
+                except AttributeError:
+                    pass
+                if reg:
+                    try:
+                        existing_post = reg.get_post(art_id)
+                    except (AttributeError, TypeError):
+                        existing_post = None
+                    if type(existing_post) is dict:
+                        ex_sha = str(existing_post.get("sha256") or "").strip().lower()
+                        ex_mroot = str(existing_post.get("mroot") or existing_post.get("merkle_root") or "").strip().lower()
+                        if cur_sha and cur_mroot and ex_sha == cur_sha and ex_mroot == cur_mroot:
+                            self.last_error_reason = "graffiti_duplicate_post"
+                            return False
         elif event == "COMMENT":
             comment_len = int(meta.get("comment_len", 0))
             if comment_len <= 0:

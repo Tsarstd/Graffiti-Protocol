@@ -232,10 +232,10 @@ class BlockValidator:
 
     def _validate_graffiti_rules(self, txs, cb, store) -> bool:
         reg = store._graffiti_registry or GraffitiRegistry()
-        return self._validate_graffiti_posts(txs, cb) and self._validate_graffiti_payouts(txs, reg)
+        return self._validate_graffiti_posts(txs, cb, reg) and self._validate_graffiti_payouts(txs, reg)
 
 
-    def _validate_graffiti_posts(self, txs, cb) -> bool:
+    def _validate_graffiti_posts(self, txs, cb, reg: GraffitiRegistry | None = None) -> bool:
         graffiti_posts = 0
         first_art_id = None
         for tx in txs[1:]:
@@ -253,6 +253,20 @@ class BlockValidator:
                     art_id = GRAFFITI.compute_art_id(sha_hex, creator) if sha_hex and creator else ""
                 if not art_id:
                     continue
+
+                if reg is not None:
+                    try:
+                        existing_post = reg.get_post(art_id)
+                    except (AttributeError, TypeError):
+                        existing_post = None
+                    if type(existing_post) is dict:
+                        ex_sha = str(existing_post.get("sha256") or "").strip().lower()
+                        ex_mroot = str(existing_post.get("mroot") or existing_post.get("merkle_root") or "").strip().lower()
+                        cur_sha = str(meta.get("sha256") or "").strip().lower()
+                        cur_mroot = str(meta.get("mroot") or meta.get("merkle_root") or "").strip().lower()
+                        if cur_sha and cur_mroot and ex_sha == cur_sha and ex_mroot == cur_mroot:
+                            self.blockchain._last_block_validation_error = "graffiti_duplicate_post"
+                            return False
 
                 pool_addr = GRAFFITI.derive_pool_address(art_id)
                 min_fee = int(GRAFFITI.calc_upload_fee_sats(int(meta.get("size") or 0)))
