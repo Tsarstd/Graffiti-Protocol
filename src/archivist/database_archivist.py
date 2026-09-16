@@ -85,16 +85,16 @@ class ArchivistDatabase:
         if not self.enable_index:
             # store in-memory only (node: no archivist index persistence)
             self._mem_index = {
-                "files": dict(index.get("files") or {}),
-                "bytes_used": int(index.get("bytes_used", 0) or 0),
-                "art_map": dict(index.get("art_map") or {}),
+                "files": dict(index.get("files", {})),
+                "bytes_used": int(index.get("bytes_used", 0)),
+                "art_map": dict(index.get("art_map", {})),
             }
             return
         # Prepare ops BEFORE clearing DB to prevent data loss on serialization failure
         ops = []
-        for gid, meta in (index.get("files") or {}).items():
+        for gid, meta in index.get("files", {}).items():
             ops.append((f"file:{gid}".encode("utf-8"), json.dumps(meta, separators=CFG.CANONICAL_SEP).encode("utf-8")))
-        for art, gid in (index.get("art_map") or {}).items():
+        for art, gid in index.get("art_map", {}).items():
             ops.append((f"art:{art}".encode("utf-8"), str(gid).encode("utf-8")))
 
         self._kv_index.clear_db("idx")
@@ -261,7 +261,7 @@ class ArchivistDatabase:
             if type(entry) is dict:
                 epoch = int(entry.get("epoch", -1))
                 ts = int(entry.get("ts", 0))
-                status = str(entry.get("status") or "error").lower()
+                status = str(entry.get("status", "error")).lower()
                 guard[art_id] = {"epoch": epoch, "ts": ts, "status": status}
         return guard
 

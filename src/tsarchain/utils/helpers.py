@@ -199,6 +199,32 @@ def extract_script_bytes(spk, _depth: int = 0) -> bytes | None:
     return None
 
 
+def extract_utxo_amount(utxo_data) -> int | None:
+    if utxo_data is None:
+        return None
+    if type(utxo_data) is dict:
+        if "amount" in utxo_data:
+            return int(utxo_data["amount"])
+        if "tx_out" in utxo_data:
+            txo = utxo_data["tx_out"]
+            if type(txo) is dict:
+                return int(txo.get("amount", 0))
+            try:
+                amt = txo.amount
+                if amt is not None:
+                    return int(amt)
+            except AttributeError:
+                pass
+        return None
+    try:
+        amt = utxo_data.amount
+        if amt is not None:
+            return int(amt)
+    except AttributeError:
+        pass
+    return None
+
+
 def script_to_address(script) -> str | None:
     b = extract_script_bytes(script)
     if not b:

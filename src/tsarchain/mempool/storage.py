@@ -55,7 +55,7 @@ class MempoolStorageMixin:
 
             hinted_size = None
             if type(meta) is dict:
-                hinted_size = meta.get("vbytes") or meta.get("virtual_size")
+                hinted_size = meta.get("vbytes")
                 
             size = int(hinted_size) if hinted_size is not None else None
             if size is None:

@@ -17,6 +17,12 @@ from ...utils.tsar_logging import get_ctx_logger
 log = get_ctx_logger("tsarchain.network.rpc_helper.history")
 
 
+def _history_sort_key(it: dict):
+    st = 0 if it.get("status") == "unconfirmed" else 1
+    h = it.get("height")
+    return (st, -(h if h is not None else -1))
+
+
 class HistoryHandler(NetworkHandlerProxy):
     def __init__(self, network):
         super().__init__(network)
@@ -105,7 +111,7 @@ class HistoryHandler(NetworkHandlerProxy):
                 else:
                     it["confirmations"] = 0
             with self._index_lock:
-                confirmed_len = len(self._addr_tx_index.get(target_spk_hex) or [])
+                confirmed_len = len(self._addr_tx_index.get(target_spk_hex, []))
             sliced["total_confirmed"] = confirmed_len
             return sliced
 
@@ -113,19 +119,22 @@ class HistoryHandler(NetworkHandlerProxy):
         self._sync_index_to_tip(chain, tip_height, opmap_chain)
 
         with self._index_lock:
-            confirmed_items = list(self._addr_tx_index.get(target_spk_hex) or [])
+            confirmed_items = list(self._addr_tx_index.get(target_spk_hex, []))
 
-        items = []
-        for tx in mem:
-            item = self._extract_tx_history_item(
-                tx, "mempool", None, int(time.time()),
-                target_spk_hex, addr, opmap_chain, opmap_mem, tip_height
-            )
-            if item:
-                items.append(item)
-
-        items.extend(confirmed_items)
-        items = self._deduplicate_and_sort_history_items(items)
+        if not mem:
+            items = list(confirmed_items)
+            items.sort(key=lambda it: -(it.get("height") or 0))
+        else:
+            items = []
+            for tx in mem:
+                item = self._extract_tx_history_item(
+                    tx, "mempool", None, int(time.time()),
+                    target_spk_hex, addr, opmap_chain, opmap_mem, tip_height
+                )
+                if item:
+                    items.append(item)
+            items.extend(confirmed_items)
+            items = self._deduplicate_and_sort_history_items(items)
         self._save_history_to_cache(target_spk_hex, items, tip_height, tip_hash, mem_seq)
 
         sliced = self._slice_items(items, limit, offset, direction, status, since_height)
@@ -135,7 +144,7 @@ class HistoryHandler(NetworkHandlerProxy):
             else:
                 it["confirmations"] = 0
         with self._index_lock:
-            confirmed_len = len(self._addr_tx_index.get(target_spk_hex) or [])
+            confirmed_len = len(self._addr_tx_index.get(target_spk_hex, []))
         sliced["total_confirmed"] = confirmed_len
 
         return sliced
@@ -399,13 +408,7 @@ class HistoryHandler(NetworkHandlerProxy):
                 by_id[tid] = it
                 
         unique_items = list(by_id.values())
-        
-        def _key(it):
-            st = 0 if it["status"] == "unconfirmed" else 1
-            h  = it["height"] if it["height"] is not None else -1
-            return (st, -h)
-            
-        unique_items.sort(key=_key)
+        unique_items.sort(key=_history_sort_key)
         return unique_items
 
 

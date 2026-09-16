@@ -51,7 +51,7 @@ class ExplorerService:
         payload = {"limit": limit, "offset": offset}
         resp = main_web.dispatch_rpc("graffiti_posts", payload, self.node_host, self.node_port)
         posts_raw = (resp.get("posts") if resp else None) or []
-        items = [self._normalize_graffiti_post(p) for p in posts_raw if p and (p.get("art_id") or p.get("artId"))]
+        items = [self._normalize_graffiti_post(p) for p in posts_raw if p and p.get("art_id")]
         resp_limit = resp.get("limit", limit) if resp else limit
         resp_offset = resp.get("offset", offset) if resp else offset
         total = resp.get("total") if resp else None
@@ -93,8 +93,8 @@ class ExplorerService:
         next_height = None
         has_more = False
         if resp:
-            next_height = resp.get("next_height") if resp.get("next_height") is not None else resp.get("nextHeight")
-            has_more = bool(resp.get("has_more") if resp.get("has_more") is not None else resp.get("hasMore", False))
+            next_height = resp.get("next_height")
+            has_more = bool(resp.get("has_more", False))
 
         return {
             "items": items,
@@ -189,7 +189,7 @@ class ExplorerService:
         nonce = self._pick(obj, "nonce")
         total_fee = self._pick(obj, "total_fee", "fee")
 
-        txs_raw = obj.get("transactions") or obj.get("tx") or []
+        txs_raw = obj.get("transactions", obj.get("tx", []))
         if not block_id and txs_raw and txs_raw[0]:
             first = txs_raw[0]
             block_id = first.get("block_id") if first.get("block_id") else block_id
@@ -199,22 +199,22 @@ class ExplorerService:
             if not tx or type(tx) is str:
                 txs.append({"txid": str(tx or ""), "inputs": [], "outputs": []})
             else:
-                txid = tx.get("txid") or tx.get("id") or tx.get("hash") or "-"
-                inputs = tx.get("inputs") or tx.get("vin") or []
-                outputs = tx.get("outputs") or tx.get("vout") or []
+                txid = tx.get("txid", tx.get("id", tx.get("hash", "-")))
+                inputs = tx.get("inputs", tx.get("vin", []))
+                outputs = tx.get("outputs", tx.get("vout", []))
                 txs.append({
                     "txid": txid,
                     "inputs": inputs,
                     "outputs": outputs,
                 })
 
-        graffiti = blk.get("graffiti") or []
-        comments_raw = blk.get("comments") or []
+        graffiti = blk.get("graffiti", [])
+        comments_raw = blk.get("comments", [])
         comments: List[Dict[str, Any]] = []
         for c in comments_raw:
             if c:
                 c_copy = dict(c)
-                c_copy["comment_text"] = c.get("comment_text") or self._decode_comment_hex(c.get("comment") or c.get("comment_hex") or "")
+                c_copy["comment_text"] = c.get("comment_text") or self._decode_comment_hex(c.get("comment", c.get("comment_hex", "")))
                 comments.append(c_copy)
 
         try:
@@ -252,22 +252,29 @@ class ExplorerService:
         timestamp = self._pick(blk, "timestamp", "time")
         size_bytes = self._pick(blk, "size_bytes", "size")
         total_fee = self._pick(blk, "total_fee", "fee")
-        tx_count_fallback = len(blk.get("transactions") or blk.get("tx") or [])
-        tx_count_raw = blk.get("tx_count", tx_count_fallback)
+        tx_count_raw = blk.get("tx_count")
+        if tx_count_raw is None:
+            txs = blk.get("transactions", blk.get("tx", []))
+            tx_count = len(txs)
+        else:
+            try:
+                tx_count = int(tx_count_raw)
+            except (ValueError, TypeError):
+                tx_count = 0
 
         try:
-            graffiti_posts = int(blk.get("graffiti_posts", 0) or 0)
+            graffiti_posts = int(blk.get("graffiti_posts", 0))
         except (ValueError, TypeError):
             graffiti_posts = 0
 
         try:
-            graffiti_comments = int(blk.get("graffiti_comments", 0) or 0)
+            graffiti_comments = int(blk.get("graffiti_comments", 0))
         except (ValueError, TypeError):
             graffiti_comments = 0
 
         default_g_count = graffiti_posts + graffiti_comments
         try:
-            graffiti_count = int(blk.get("graffiti_count", default_g_count) or default_g_count)
+            graffiti_count = int(blk.get("graffiti_count", default_g_count))
         except (ValueError, TypeError):
             graffiti_count = default_g_count
 
@@ -275,11 +282,6 @@ class ExplorerService:
             total_fee_num = float(total_fee or 0)
         except (ValueError, TypeError):
             total_fee_num = 0.0
-
-        try:
-            tx_count = int(tx_count_raw or 0)
-        except (ValueError, TypeError):
-            tx_count = 0
 
         res = dict(blk)
         res.update({
@@ -303,60 +305,54 @@ class ExplorerService:
         if obj.get("error") or obj.get("status") == "error" or obj.get("found") is False:
             return None
 
-        inputs = obj.get("inputs") or obj.get("vin") or []
-        outputs = obj.get("outputs") or obj.get("vout") or []
-        txid = obj.get("txid") or obj.get("id") or obj.get("hash")
+        inputs = obj.get("inputs", obj.get("vin", []))
+        outputs = obj.get("outputs", obj.get("vout", []))
+        txid = obj.get("txid", obj.get("id", obj.get("hash")))
         if not txid and (inputs or outputs):
             txid = fallback_txid
 
         if not txid:
             return None
 
-        confirmations = obj.get("confirmations") or obj.get("conf") or 0
-        fee = obj.get("fee") or obj.get("fees") or 0
-        height = obj.get("block_height") or obj.get("height") or "-"
-        size = obj.get("size") or obj.get("vsize") or obj.get("vbytes") or "-"
-        vsize = obj.get("vsize") or obj.get("vbytes") or "-"
-        weight = obj.get("weight") or "-"
-        timestamp = obj.get("timestamp") or obj.get("time") or None
+        confirmations = obj.get("confirmations", obj.get("conf", 0))
+        fee = obj.get("fee", obj.get("fees", 0))
+        height = obj.get("block_height", obj.get("height", "-"))
+        size = obj.get("size", obj.get("vsize", obj.get("vbytes", "-")))
+        vsize = obj.get("vsize", obj.get("vbytes", "-"))
+        weight = obj.get("weight", "-")
+        timestamp = obj.get("timestamp", obj.get("time"))
 
         try:
             conf_num = int(confirmations or 0)
         except (ValueError, TypeError):
             conf_num = 0
-        status = obj.get("status") or ("confirmed" if conf_num > 0 else "unconfirmed")
+        status = obj.get("status", "confirmed" if conf_num > 0 else "unconfirmed")
         is_coinbase = obj.get("is_coinbase")
 
         norm_inputs: List[Dict[str, Any]] = []
         for inp in inputs:
             if inp:
-                vout_val = inp.get("vout") if inp.get("vout") is not None else (
-                    inp.get("prev_index") if inp.get("prev_index") is not None else (
-                        inp.get("index") if inp.get("index") is not None else inp.get("n", 0)
-                    )
-                )
+                vout_val = int(inp.get("vout", 0))
                 norm_inputs.append({
-                    "txid": inp.get("txid") or inp.get("prev_txid") or inp.get("tx") or "",
+                    "txid": inp.get("txid", ""),
                     "vout": vout_val,
-                    "address": inp.get("address") or inp.get("addr") or inp.get("scriptpubkey_address") or "",
-                    "amount": inp.get("amount") if inp.get("amount") is not None else inp.get("value", 0),
+                    "address": inp.get("address", ""),
+                    "amount": inp.get("amount", 0),
                     "is_coinbase": bool(inp.get("is_coinbase", False)),
                 })
 
         norm_outputs: List[Dict[str, Any]] = []
         for idx, out in enumerate(outputs):
             if out:
-                vout_val = out.get("index") if out.get("index") is not None else (
-                    out.get("vout") if out.get("vout") is not None else idx
-                )
-                address = out.get("address") or out.get("scriptpubkey_address") or None
+                vout_val = out.get("index") if out.get("index") is not None else out.get("vout", idx)
+                address = out.get("address")
                 event = None
                 evt = out.get("event")
                 if evt:
                     event = evt if type(evt) is str else evt.get("type")
                 norm_outputs.append({
                     "vout": vout_val,
-                    "amount": out.get("amount") if out.get("amount") is not None else out.get("value", 0),
+                    "amount": out.get("amount", 0),
                     "address": address,
                     "event": event,
                 })
@@ -387,23 +383,23 @@ class ExplorerService:
     def _normalize_address(self, addr: Any) -> Any:
         if not addr:
             return addr
-        utxos = addr.get("utxos") or []
+        utxos = addr.get("utxos", [])
         balance = addr.get("balance")
         if balance is None:
             balance = 0
             for u in utxos:
                 if u:
                     try:
-                        balance += float(u.get("amount", 0) or 0)
+                        balance += float(u.get("amount", 0))
                     except (ValueError, TypeError):
                         pass
-        history = addr.get("history") or []
+        history = addr.get("history", [])
         res = dict(addr)
         res.update({
             "balance": balance,
             "utxos": utxos,
-            "utxo_count": addr.get("utxo_count") or len(utxos),
-            "total_txs": addr.get("total_txs") or len(history),
+            "utxo_count": addr.get("utxo_count", len(utxos)),
+            "total_txs": addr.get("total_txs", len(history)),
             "history": history,
         })
         return res
@@ -412,7 +408,7 @@ class ExplorerService:
     def _normalize_graffiti_post(self, post: Any) -> Any:
         if not post:
             return post
-        art_id = post.get("art_id") or post.get("artId")
+        art_id = post.get("art_id", "")
         res = dict(post)
         res["art_id"] = art_id
         res["preview_url"] = f"/api/graffiti/{art_id}/media" if art_id else None
@@ -428,12 +424,12 @@ class ExplorerService:
         post = self._normalize_graffiti_post(post_source)
         if not post or not post.get("art_id"):
             return None
-        comments_raw = payload.get("comments") or post.get("comments") or []
+        comments_raw = payload.get("comments", post.get("comments", []))
         comments: List[Dict[str, Any]] = []
         for c in comments_raw:
             if c:
                 c_copy = dict(c)
-                c_copy["comment_text"] = c.get("comment_text") or self._decode_comment_hex(c.get("comment") or c.get("comment_hex") or "")
+                c_copy["comment_text"] = c.get("comment_text") or self._decode_comment_hex(c.get("comment", c.get("comment_hex", "")))
                 comments.append(c_copy)
         res = dict(post)
         res["comments"] = comments

@@ -359,7 +359,7 @@ def build_payout_metadata(  # NOSONAR
     if type(recipients) is not list or not recipients:
         raise ValueError("bad_recipients")
     for item in recipients:
-        addr = str(item.get("addr") or item.get("address") or "").strip().lower()
+        addr = str(item.get("addr", "")).strip().lower()
         amt = int(item.get("amount", 0))
         if not _is_valid_tsar_address(addr) or amt <= 0:
             raise ValueError("bad_recipients")
@@ -563,7 +563,7 @@ def _validate_and_format_recipients(recipients: list[dict[str, Any]] | dict[str,
         raise ValueError("recipients_empty")
     rec_list: list[dict[str, Any]] = []
     for item in recipients:
-        addr = str(item.get("addr") or item.get("address") or "").strip().lower()
+        addr = str(item.get("addr", "")).strip().lower()
         amt = int(item.get("amount", 0))
         if not _is_valid_tsar_address(addr) or amt <= 0:
             raise ValueError("bad_recipient")
@@ -676,9 +676,9 @@ def _process_extra_meta(meta: dict[str, Any], extra: Optional[dict[str, Any]]) -
 
 
 def _parse_post_merkle(obj: dict[str, Any]) -> bool:
-    mroot = obj.get("mroot") or obj.get("merkle_root")
-    mchunk = obj.get("mchunk") or obj.get("merkle_chunk")
-    mcount = obj.get("mcount") or obj.get("merkle_count")
+    mroot = obj.get("mroot")
+    mchunk = obj.get("mchunk")
+    mcount = obj.get("mcount")
     if mroot or mchunk or mcount:
         if not (mroot and mchunk and mcount):
             return False
@@ -766,7 +766,7 @@ def _parse_payout_recipients(recipients: list[Any]) -> Optional[list[dict[str, A
     for item in recipients:
         if type(item) is not dict:
             return None
-        addr = str(item.get("addr") or item.get("address") or "").strip().lower()
+        addr = str(item.get("addr", "")).strip().lower()
         amt = int(item.get("amount", 0))
         if amt <= 0 or not _is_valid_tsar_address(addr):
             return None

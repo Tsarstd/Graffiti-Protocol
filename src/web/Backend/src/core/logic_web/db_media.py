@@ -409,11 +409,11 @@ def fetch_storers(
             db_cache.cache_set(cache_key, [], ttl_sec=ttl_err)
         return []
 
-    storers = resp.get("storers") or resp.get("items") or []
+    storers = resp.get("storers", [])
     valid: list[Dict[str, Any]] = []
     for meta in storers:
-        port = int(meta.get("port") or 0)
-        addr = str(meta.get("addr") or meta.get("address") or "").strip().lower()
+        port = int(meta.get("port", 0))
+        addr = str(meta.get("addr", "")).strip().lower()
         if not addr or port <= 0:
             continue
         valid.append(meta)
@@ -524,10 +524,7 @@ def _write_cache_file(cache_root: str, art_id: str, meta: dict, data: bytes) -> 
 
 
 def _extract_total_size(meta: dict) -> int:
-    try:
-        return int(meta.get("size_bytes") or meta.get("size") or meta.get("bytes") or 0)
-    except Exception:
-        return 0
+    return int(meta.get("size_bytes") or meta.get("size", 0))
 
 
 def _check_storage_response(resp: Any) -> Tuple[bool, str]:
@@ -578,7 +575,7 @@ def _get_ordered_storers(
     preferred, others = [], []
     storer_target = (storer_addr or "").strip().lower()
     for meta in storers:
-        addr = str(meta.get("addr") or meta.get("address") or "").strip().lower()
+        addr = str(meta.get("addr", "")).strip().lower()
         (preferred if storer_target and addr == storer_target else others).append(meta)
     return preferred + others
 

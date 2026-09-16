@@ -255,15 +255,12 @@ class BlockValidator:
                     continue
 
                 if reg is not None:
-                    try:
-                        existing_post = reg.get_post(art_id)
-                    except (AttributeError, TypeError):
-                        existing_post = None
+                    existing_post = reg.get_post(art_id)
                     if type(existing_post) is dict:
-                        ex_sha = str(existing_post.get("sha256") or "").strip().lower()
-                        ex_mroot = str(existing_post.get("mroot") or existing_post.get("merkle_root") or "").strip().lower()
-                        cur_sha = str(meta.get("sha256") or "").strip().lower()
-                        cur_mroot = str(meta.get("mroot") or meta.get("merkle_root") or "").strip().lower()
+                        ex_sha = str(existing_post.get("sha256", "")).strip().lower()
+                        ex_mroot = str(existing_post.get("mroot", "")).strip().lower()
+                        cur_sha = str(meta.get("sha256", "")).strip().lower()
+                        cur_mroot = str(meta.get("mroot", "")).strip().lower()
                         if cur_sha and cur_mroot and ex_sha == cur_sha and ex_mroot == cur_mroot:
                             self.blockchain._last_block_validation_error = "graffiti_duplicate_post"
                             return False
@@ -349,7 +346,7 @@ class BlockValidator:
             
         total_req = 0
         for rec in recs:
-            addr = str(rec.get("addr") or rec.get("address") or "").strip().lower()
+            addr = str(rec.get("addr", "")).strip().lower()
             amt_req = int(rec.get("amount", 0))
             if not addr or amt_req <= 0:
                 self.blockchain._last_block_validation_error = "payout_bad_recipient"

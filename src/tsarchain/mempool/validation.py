@@ -21,6 +21,7 @@ from ..utils.helpers import (
     tx_to_compact_tuple,
     native_validate_tx_p2wpkh_compact,
     compute_tx_weight_vsize,
+    extract_utxo_amount,
 )
 
 from ..utils.tsar_logging import get_ctx_logger
@@ -111,14 +112,14 @@ class TxMempoolValidator:
         return self._validate_payout_sanity(tx, paymap, reg)
 
     def _validate_payout_art_and_epoch(self, payout_meta: dict[str, Any], reg: GraffitiRegistry) -> bool:
-        art_id = str(payout_meta.get("art_id") or "").strip().lower()
+        art_id = str(payout_meta.get("art_id", "")).strip().lower()
         post = reg.get_post(art_id)
         if not post:
             self.last_error_reason = "payout_unknown_art"
             log.warning(_PAYOUT_REJECT_MSG, art_id[:16], self.last_error_reason)
             return False
 
-        stats = post.get("stats") or {}
+        stats = post.get("stats", {})
         last_epoch = int(stats.get("last_paid_epoch", -1))
         epoch = int(payout_meta.get("epoch", -1))
         if 0 <= epoch <= last_epoch:
@@ -141,8 +142,8 @@ class TxMempoolValidator:
         return True
 
     def _validate_payout_recipients_and_balance(self, tx: Tx, payout_meta: dict[str, Any], post: dict[str, Any]) -> bool:
-        art_id = str(payout_meta.get("art_id") or "").strip().lower()
-        stats = post.get("stats") or {}
+        art_id = str(payout_meta.get("art_id", "")).strip().lower()
+        stats = post.get("stats", {})
         pool_balance = int(stats.get("pool_balance", 0))
 
         recs = payout_meta.get("recipients")
@@ -175,7 +176,7 @@ class TxMempoolValidator:
 
         total_req = 0
         for rec in recs:
-            addr = str(rec.get("addr") or rec.get("address") or "").strip().lower()
+            addr = str(rec.get("addr", "")).strip().lower()
             amt_req = int(rec.get("amount", 0))
             if not addr or amt_req <= 0:
                 self.last_error_reason = "payout_bad_recipient"
@@ -256,7 +257,7 @@ class TxMempoolValidator:
         return False
 
     def _validate_single_payout_sanity(self, meta: dict[str, Any], paymap: dict[str, int], reg: GraffitiRegistry) -> bool:
-        art_id = str(meta.get("art_id") or "").strip().lower()
+        art_id = str(meta.get("art_id", "")).strip().lower()
         if not art_id:
             self.last_error_reason = "payout_bad_art_id"
             return False
@@ -266,7 +267,7 @@ class TxMempoolValidator:
             self.last_error_reason = "payout_unknown_art"
             return False
 
-        stats = post.get("stats") or {}
+        stats = post.get("stats", {})
         pool_balance = int(stats.get("pool_balance", 0))
         last_epoch = int(stats.get("last_paid_epoch", -1))
         epoch = int(meta.get("epoch", -1))
@@ -285,7 +286,7 @@ class TxMempoolValidator:
 
         total_req = 0
         for rec in recs:
-            addr = str(rec.get("addr") or rec.get("address") or "").strip().lower()
+            addr = str(rec.get("addr", "")).strip().lower()
             amt_req = int(rec.get("amount", 0))
             if not addr or amt_req <= 0:
                 self.last_error_reason = "payout_bad_recipient"
@@ -352,7 +353,7 @@ class TxMempoolValidator:
         if not self._validate_payout_art_and_epoch(payout_meta, reg):
             return False
 
-        art_id = str(payout_meta.get("art_id") or "").strip().lower()
+        art_id = str(payout_meta.get("art_id", "")).strip().lower()
         post = reg.get_post(art_id)
         if not self._validate_payout_recipients_and_balance(tx, payout_meta, post):
             return False
@@ -369,41 +370,30 @@ class TxMempoolValidator:
             meta = GRAFFITI.parse_from_script(spk)
             if meta and str(meta.get("event", "")).upper() == "POST":
                 is_post = True
-                art_id = str(meta.get("art_id") or "").strip().lower()
+                art_id = str(meta.get("art_id", "")).strip().lower()
                 if not art_id:
-                    sha_hex = str(meta.get("sha256") or "").strip().lower()
-                    creator = str(meta.get("creator") or "").strip().lower()
+                    sha_hex = str(meta.get("sha256", "")).strip().lower()
+                    creator = str(meta.get("creator", "")).strip().lower()
                     art_id = GRAFFITI.compute_art_id(sha_hex, creator) if sha_hex and creator else ""
                 if art_id:
-                    cur_sha = str(meta.get("sha256") or "").strip().lower()
-                    cur_mroot = str(meta.get("mroot") or meta.get("merkle_root") or "").strip().lower()
+                    cur_sha = str(meta.get("sha256", "")).strip().lower()
+                    cur_mroot = str(meta.get("mroot", "")).strip().lower()
 
                     # 1. Fast O(1) direct key lookup against permanent posts in GraffitiRegistry
-                    reg = None
-                    try:
-                        reg = self.utxo._graffiti_registry
-                    except AttributeError:
-                        pass
+                    reg = self.utxo._graffiti_registry if self.utxo else None
                     if not reg:
                         reg = GraffitiRegistry()
-                    try:
-                        existing_post = reg.get_post(art_id)
-                    except (AttributeError, TypeError):
-                        existing_post = None
+                    existing_post = reg.get_post(art_id)
                     if type(existing_post) is dict:
-                        ex_sha = str(existing_post.get("sha256") or "").strip().lower()
-                        ex_mroot = str(existing_post.get("mroot") or existing_post.get("merkle_root") or "").strip().lower()
+                        ex_sha = str(existing_post.get("sha256", "")).strip().lower()
+                        ex_mroot = str(existing_post.get("mroot", "")).strip().lower()
                         if cur_sha and cur_mroot and ex_sha == cur_sha and ex_mroot == cur_mroot:
                             self.last_error_reason = "graffiti_duplicate_post"
                             log.warning("[_enforce_mempool_post_limit] POST rejected as on-chain duplicate: art_id=%s", art_id[:16])
                             return False
 
                     # 2. Fast check against unconfirmed posts in mempool
-                    pool = None
-                    try:
-                        pool = self._pool
-                    except AttributeError:
-                        pass
+                    pool = self._pool
                     if type(pool) is dict:
                         for existing_tx in pool.values():
                             if existing_tx.txid == tx.txid:
@@ -412,14 +402,14 @@ class TxMempoolValidator:
                                 if out.script_pubkey is not None:
                                     p_meta = GRAFFITI.parse_from_script(out.script_pubkey)
                                     if p_meta and str(p_meta.get("event", "")).upper() == "POST":
-                                        p_art_id = str(p_meta.get("art_id") or "").strip().lower()
+                                        p_art_id = str(p_meta.get("art_id", "")).strip().lower()
                                         if not p_art_id:
-                                            p_sha = str(p_meta.get("sha256") or "").strip().lower()
-                                            p_creator = str(p_meta.get("creator") or "").strip().lower()
+                                            p_sha = str(p_meta.get("sha256", "")).strip().lower()
+                                            p_creator = str(p_meta.get("creator", "")).strip().lower()
                                             p_art_id = GRAFFITI.compute_art_id(p_sha, p_creator) if p_sha and p_creator else ""
                                         if p_art_id and p_art_id == art_id:
-                                            p_ex_sha = str(p_meta.get("sha256") or "").strip().lower()
-                                            p_ex_mroot = str(p_meta.get("mroot") or p_meta.get("merkle_root") or "").strip().lower()
+                                            p_ex_sha = str(p_meta.get("sha256", "")).strip().lower()
+                                            p_ex_mroot = str(p_meta.get("mroot", "")).strip().lower()
                                             if cur_sha and cur_mroot and p_ex_sha == cur_sha and p_ex_mroot == cur_mroot:
                                                 self.last_error_reason = "graffiti_duplicate_post"
                                                 log.warning("[_enforce_mempool_post_limit] POST rejected as mempool duplicate: art_id=%s", art_id[:16])
@@ -427,7 +417,7 @@ class TxMempoolValidator:
 
                     try:
                         pool_addr = GRAFFITI.derive_pool_address(art_id)
-                        min_fee = GRAFFITI.calc_upload_fee_sats(int(meta.get("size") or 0))
+                        min_fee = GRAFFITI.calc_upload_fee_sats(int(meta.get("size", 0)))
                         paid = sum(int(out.amount or 0) for out in outputs if out.address == pool_addr)
                         if paid < min_fee:
                             self.last_error_reason = "graffiti_post_fee_insufficient"
@@ -476,19 +466,9 @@ class TxMempoolValidator:
         return None
 
     def _get_utxo_amount(self, utxo_data) -> int:
-        if type(utxo_data) is dict:
-            if "tx_out" in utxo_data:
-                txo = utxo_data["tx_out"]
-                return int(txo.get("amount", 0)) if type(txo) is dict else int(txo.amount or 0)
-            if "amount" in utxo_data:
-                return int(utxo_data["amount"])
-        else:
-            try:
-                amt = utxo_data.amount
-                if amt is not None:
-                    return int(amt)
-            except AttributeError:
-                pass
+        amt = extract_utxo_amount(utxo_data)
+        if amt is not None:
+            return amt
         raise ValueError(f"Unknown UTXO format: {utxo_data}")
 
     def _txin_prev_txid(self, tx_in) -> str | None:
@@ -586,27 +566,20 @@ class TxMempoolValidator:
             if size_val > CFG.GRAFFITI_MAX_SIZE_BYTES:
                 self.last_error_reason = "graffiti_size_exceeds_limit"
                 return False
-            art_id = str(meta.get("art_id") or "").strip().lower()
+            art_id = str(meta.get("art_id", "")).strip().lower()
             if not art_id:
-                sha_hex = str(meta.get("sha256") or "").strip().lower()
-                creator = str(meta.get("creator") or "").strip().lower()
+                sha_hex = str(meta.get("sha256", "")).strip().lower()
+                creator = str(meta.get("creator", "")).strip().lower()
                 art_id = GRAFFITI.compute_art_id(sha_hex, creator) if sha_hex and creator else ""
             if art_id:
-                cur_sha = str(meta.get("sha256") or "").strip().lower()
-                cur_mroot = str(meta.get("mroot") or meta.get("merkle_root") or "").strip().lower()
-                reg = None
-                try:
-                    reg = self.utxo._graffiti_registry
-                except AttributeError:
-                    pass
+                cur_sha = str(meta.get("sha256", "")).strip().lower()
+                cur_mroot = str(meta.get("mroot", "")).strip().lower()
+                reg = self.utxo._graffiti_registry if self.utxo else None
                 if reg:
-                    try:
-                        existing_post = reg.get_post(art_id)
-                    except (AttributeError, TypeError):
-                        existing_post = None
+                    existing_post = reg.get_post(art_id)
                     if type(existing_post) is dict:
-                        ex_sha = str(existing_post.get("sha256") or "").strip().lower()
-                        ex_mroot = str(existing_post.get("mroot") or existing_post.get("merkle_root") or "").strip().lower()
+                        ex_sha = str(existing_post.get("sha256", "")).strip().lower()
+                        ex_mroot = str(existing_post.get("mroot", "")).strip().lower()
                         if cur_sha and cur_mroot and ex_sha == cur_sha and ex_mroot == cur_mroot:
                             self.last_error_reason = "graffiti_duplicate_post"
                             return False

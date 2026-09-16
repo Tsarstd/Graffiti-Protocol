@@ -50,7 +50,7 @@ def handle_storage_rpc(
         log.warning("[storage_auth] forbidden storage RPC %s from %s", mtype, addr)
         return {"error": "forbidden: storage-only endpoint"}
 
-    storer_addr = str(peer_meta.get("addr") or peer_meta.get("address") or "").strip().lower()
+    storer_addr = str(peer_meta.get("addr", "")).strip().lower()
     if not storer_addr or not GRAFFITI._is_valid_tsar_address(storer_addr):
         log.warning("[storage_auth] invalid storer addr nid=%s ip=%s", src_node_id or "-", ip)
         return {"error": "storer_unregistered"}
@@ -123,16 +123,14 @@ def _handle_storage_proof_submit(self, message, storer_addr, ip, src_node_id):
     if err: return err
     art_id, epoch, offset, length, proof_hash, storer, height, seed = basic_fields
 
-    try:
-        reg = self.broadcast.utxodb._graffiti_registry
-    except AttributeError:
-        reg = None
+    utxo = self.broadcast.utxodb if self.broadcast else None
+    reg = utxo._graffiti_registry if utxo else None
     if not reg:
         return {"error": "registry_unavailable"}
     post = reg.get_post(art_id)
     if not post:
         return {"error": "unknown_art_id"}
-    size = int(post.get("size") or 0)
+    size = int(post.get("size", 0))
     if size <= 0 or (offset + length) > size:
         return {"error": "out_of_range", "size": size}
 
@@ -183,18 +181,10 @@ def _handle_storage_build_payout(self, message, storer_addr, ip, src_node_id):
 
     fee_rate = int(message.get("fee_rate", CFG.DEFAULT_FEE_RATE_SATVB))
     epoch_req = int(message.get("epoch", -1))
-    try:
-        utxo = self.broadcast.utxodb
-    except AttributeError:
-        utxo = None
-    
+    utxo = self.broadcast.utxodb if self.broadcast else None
     if utxo is None:
         return {"error": "utxo_unavailable"}
-    
-    try:
-        reg = utxo._graffiti_registry
-    except AttributeError:
-        reg = None
+    reg = utxo._graffiti_registry if utxo else None
     proof_entry = reg.get_latest_proof(art_id, storer_addr) if reg else None
     proof_meta = None
     if proof_entry:
@@ -351,8 +341,8 @@ def _parse_payout_recipients(message, storer_addr):
         return {"error": "payout_requires_single_recipient"}, None
     
     rec = recipients[0] if type(recipients[0]) is dict else {}
-    rec_addr = str(rec.get("addr") or rec.get("address") or "").strip().lower()
-    rec_amt = int(rec.get("amount", 0) or 0)
+    rec_addr = str(rec.get("addr", "")).strip().lower()
+    rec_amt = int(rec.get("amount", 0))
     
     if not rec_addr or not GRAFFITI._is_valid_tsar_address(rec_addr) or rec_amt <= 0:
         return {"error": "bad_recipients"}, None

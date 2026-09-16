@@ -38,40 +38,23 @@ class TxSearch:
             b = None
             if callable(get_block):
                 b = get_block(hx)
-            if b:
-                try:
-                    if not b.get("error") and (b.get("hash") or b.get("transactions") or b.get("tx")):
-                        done = True
-                        self.panel._ui(self.panel.block_search.render_block, b)
-                        self.panel._ui(self.panel._finish_search, True)
-                        return
-                except AttributeError:
-                    pass
+            if b and type(b) is dict and not b.get("error") and (b.get("hash") or b.get("transactions") or b.get("tx")):
+                done = True
+                self.panel._ui(self.panel.block_search.render_block, b)
+                self.panel._ui(self.panel._finish_search, True)
+                return
 
             if callable(get_tx):
                 t = get_tx(hx)
-                if t:
-                    try:
-                        if not t.get("error"):
-                            tx_inner = t.get("tx")
-                            if tx_inner and type(tx_inner) is dict:
-                                t = tx_inner
-                            else:
-                                tx_inner2 = t.get("transaction")
-                                if tx_inner2 and type(tx_inner2) is dict:
-                                    t = tx_inner2
-                            if "inputs" not in t and "vin" in t:
-                                t["inputs"] = t.get("vin") or []
-                            if "outputs" not in t and "vout" in t:
-                                t["outputs"] = t.get("vout") or []
-
-                            txid_disp = t.get("txid") or t.get("id") or t.get("hash") or hx
-                            done = True
-                            self.panel._ui(self.render_tx, txid_disp, t)
-                            self.panel._ui(self.panel._finish_search, True)
-                            return
-                    except AttributeError:
-                        pass
+                if t and type(t) is dict and not t.get("error"):
+                    tx_inner = t.get("tx")
+                    if type(tx_inner) is dict:
+                        t = tx_inner
+                    txid_disp = t.get("txid") or hx
+                    done = True
+                    self.panel._ui(self.render_tx, txid_disp, t)
+                    self.panel._ui(self.panel._finish_search, True)
+                    return
 
             self.panel._ui(self.panel._render_error, "Not found")
             self.panel._ui(self.panel._finish_search, done)
@@ -82,10 +65,10 @@ class TxSearch:
     def render_tx(self, txid: str, t: Dict) -> None:
         p = self.panel
         p._clear_text()
-        fee = t.get("fee") or t.get("fees") or "-"
-        conf = t.get("confirmations") or t.get("conf") or 0
-        height = t.get("height") or t.get("block_height") or "-"
-        status = t.get("status") or ("unconfirmed" if int(conf or 0) == 0 else "confirmed")
+        fee = t.get("fee", "-")
+        conf = t.get("confirmations", 0)
+        height = t.get("block_height", t.get("height", "-"))
+        status = t.get("status", "unconfirmed" if int(conf or 0) == 0 else "confirmed")
         coinbase = bool(t.get("is_coinbase"))
 
         p._section("Transaction")
@@ -98,17 +81,17 @@ class TxSearch:
             p._kv("Fee", self._fmt_tsar_amount(fee), mono=True, vtag="val_num")
         p._kv("Coinbase", str(coinbase))
 
-        vin = t.get("inputs") or t.get("vin") or []
-        vout = t.get("outputs") or t.get("vout") or []
+        vin = t.get("inputs", [])
+        vout = t.get("outputs", [])
 
         p._section("Inputs")
         if not vin:
             p._writeln("No inputs (coinbase?)", "muted")
         else:
             for vi in vin:
-                src = vi.get("txid") or vi.get("prev_txid") or vi.get("tx") or "-"
-                addr = vi.get("address") or vi.get("addr") or ""
-                amt = vi.get("amount") or vi.get("value")
+                src = vi.get("txid", "-")
+                addr = vi.get("address", "")
+                amt = vi.get("amount")
 
                 p.text.insert("end", "- ", ("mono",))
                 p.text.insert("end", src, ("mono", "val_hex"))
@@ -128,7 +111,7 @@ class TxSearch:
             p._writeln("No outputs", "muted")
         else:
             for i, vo in enumerate(vout):
-                val = vo.get("value") or vo.get("amount") or "-"
+                val = vo.get("amount", "-")
                 p.text.insert("end", f"- [{i}] ", ("mono",))
                 p.text.insert("end", self._fmt_tsar_amount(val) + "\n", "val_num")
         p._finish_render("Tx detail")

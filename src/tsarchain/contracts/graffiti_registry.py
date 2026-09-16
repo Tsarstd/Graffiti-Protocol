@@ -27,14 +27,14 @@ _PROOF_HEADER_STRUCT = "<QQIIQI"
 
 
 def serialize_post_binary(entry: dict) -> bytes:
-    stats = entry.get("stats") or {}
-    pool_bal = int(stats.get("pool_balance") or 0)
-    creator_paid = int(stats.get("creator_paid") or 0)
-    storage_paid = int(stats.get("storage_paid") or 0)
-    comments = int(stats.get("comments") or 0)
+    stats = entry.get("stats", {})
+    pool_bal = int(stats.get("pool_balance", 0))
+    creator_paid = int(stats.get("creator_paid", 0))
+    storage_paid = int(stats.get("storage_paid", 0))
+    comments = int(stats.get("comments", 0))
     last_paid_epoch = int(stats.get("last_paid_epoch", -1))
-    height = int(entry.get("block_height") or 0)
-    amt_paid = int(entry.get("amount_paid") or 0)
+    height = int(entry.get("block_height", 0))
+    amt_paid = int(entry.get("amount_paid", 0))
     
     payload = json.dumps(entry, separators=CFG.CANONICAL_SEP).encode("utf-8")
     header = struct.pack(_POST_HEADER_STRUCT, amt_paid, pool_bal, creator_paid, storage_paid, height, comments, last_paid_epoch, len(payload))
@@ -55,12 +55,12 @@ def deserialize_post_binary(raw: bytes, art_id: str = "") -> dict:
 
 
 def serialize_comment_binary(entry: dict) -> bytes:
-    height = int(entry.get("block_height") or 0)
-    amount = int(entry.get("amount") or 0)
-    tip = int(entry.get("tip") or 0)
-    creator_paid = int(entry.get("creator_paid") or 0)
-    storage_paid = int(entry.get("storage_paid") or 0)
-    ts = int(entry.get("ts") or 0)
+    height = int(entry.get("block_height", 0))
+    amount = int(entry.get("amount", 0))
+    tip = int(entry.get("tip", 0))
+    creator_paid = int(entry.get("creator_paid", 0))
+    storage_paid = int(entry.get("storage_paid", 0))
+    ts = int(entry.get("ts", 0))
     payload = json.dumps(entry, separators=CFG.CANONICAL_SEP).encode("utf-8")
     header = struct.pack(_COMMENT_HEADER_STRUCT, height, amount, tip, creator_paid, storage_paid, ts, len(payload))
     return header + payload
@@ -71,9 +71,10 @@ def deserialize_comment_binary(raw: bytes) -> dict:
 
 
 def serialize_payout_binary(entry: dict) -> bytes:
-    height = int(entry.get("block_height") or 0)
-    amount = int(entry.get("amount") or 0)
-    epoch = int(entry.get("epoch", -1) if entry.get("epoch") is not None else -1)
+    height = int(entry.get("block_height", 0))
+    amount = int(entry.get("amount", 0))
+    raw_epoch = entry.get("epoch")
+    epoch = -1 if raw_epoch is None else int(raw_epoch)
     payload = json.dumps(entry, separators=CFG.CANONICAL_SEP).encode("utf-8")
     header = struct.pack(_PAYOUT_HEADER_STRUCT, height, amount, epoch, len(payload))
     return header + payload
@@ -84,11 +85,11 @@ def deserialize_payout_binary(raw: bytes) -> dict:
 
 
 def serialize_proof_binary(entry: dict) -> bytes:
-    epoch = int(entry.get("epoch") or 0)
-    offset = int(entry.get("offset") or 0)
-    length = int(entry.get("length") or 0)
-    height = int(entry.get("height") or 0)
-    ts = int(entry.get("ts") or 0)
+    epoch = int(entry.get("epoch", 0))
+    offset = int(entry.get("offset", 0))
+    length = int(entry.get("length", 0))
+    height = int(entry.get("height", 0))
+    ts = int(entry.get("ts", 0))
     payload = json.dumps(entry, separators=CFG.CANONICAL_SEP).encode("utf-8")
     header = struct.pack(_PROOF_HEADER_STRUCT, epoch, offset, length, height, ts, len(payload))
     return header + payload
@@ -134,7 +135,7 @@ class GraffitiRegistry:
 
 
     def get_post(self, art_id: str) -> Dict[str, Any] | None:
-        return (self.data.get("posts") or {}).get(art_id)
+        return self.data.get("posts", {}).get(art_id)
 
 
     def record_comment(self, art_id: str, meta: Dict[str, Any], txid: str,
@@ -146,11 +147,11 @@ class GraffitiRegistry:
             "block_height": int(block_height),
             "comment": meta.get("comment"),
             "commenter": meta.get("commenter"),
-            "amount": int(meta.get("amount") or 0),
-            "tip": int(meta.get("tip") or 0),
+            "amount": int(meta.get("amount", 0)),
+            "tip": int(meta.get("tip", 0)),
             "creator_paid": int(creator_paid),
             "storage_paid": int(storage_paid),
-            "ts": int(meta.get("ts") or time.time()),
+            "ts": int(meta.get("ts", time.time())),
         }
         existing_txids = {item.get("txid") for item in thread}
         if txid in existing_txids:
@@ -244,7 +245,7 @@ class GraffitiRegistry:
         storer = (storer or "").strip().lower()
         if not art_id or not storer:
             return None
-        proofs = (self.data.get("proofs") or {}).get(art_id, [])
+        proofs = self.data.get("proofs", {}).get(art_id, [])
         for item in proofs:
             if item.get("storer") == storer and int(item.get("epoch", -1)) == int(epoch):
                 return dict(item)
@@ -254,7 +255,7 @@ class GraffitiRegistry:
     def get_latest_proof(self, art_id: str, storer: str | None = None) -> Dict[str, Any] | None:
         art_id = (art_id or "").strip().lower()
         storer = (storer or "").strip().lower() if storer else None
-        proofs = (self.data.get("proofs") or {}).get(art_id, [])
+        proofs = self.data.get("proofs", {}).get(art_id, [])
         if not proofs:
             return None
         filtered = [dict(p) for p in proofs if (not storer or p.get("storer") == storer)]
@@ -273,24 +274,24 @@ class GraffitiRegistry:
 
     def list_payouts(self, art_id: str, limit: int = 100) -> list[Dict[str, Any]]:
         art_id = (art_id or "").strip().lower()
-        payouts = (self.data.get("payouts") or {}).get(art_id, [])
+        payouts = self.data.get("payouts", {}).get(art_id, [])
         items = [dict(entry) for entry in payouts]
-        items.sort(key=lambda r: int(r.get("block_height") or 0), reverse=True)
+        items.sort(key=lambda r: int(r.get("block_height", 0)), reverse=True)
         if type(limit) is int and limit > 0:
             return items[:limit]
         return items
 
 
     def list_posts(self, limit: int = 50, offset: int = 0) -> list[Dict[str, Any]]:
-        posts = self.data.get("posts") or {}
+        posts = self.data.get("posts", {})
         items: list[Dict[str, Any]] = []
         for art_id, entry in posts.items():
             rec = dict(entry)
             rec["art_id"] = art_id
-            stats = rec.get("stats") or {}
+            stats = rec.get("stats", {})
             rec["stats"] = stats
             items.append(rec)
-        items.sort(key=lambda r: (int(r.get("block_height") or 0), int(r.get("ts") or 0)), reverse=True)
+        items.sort(key=lambda r: (int(r.get("block_height", 0)), int(r.get("ts", 0))), reverse=True)
         off = max(0, int(offset or 0))
         if type(limit) is int and limit > 0:
             return items[off:off + limit]
@@ -301,9 +302,9 @@ class GraffitiRegistry:
         art_id = (art_id or "").strip().lower()
         if not art_id:
             return []
-        comments = (self.data.get("comments") or {}).get(art_id, [])
+        comments = self.data.get("comments", {}).get(art_id, [])
         items = [dict(entry) for entry in comments]
-        items.sort(key=lambda r: (int(r.get("block_height") or 0), int(r.get("ts") or 0)), reverse=True)
+        items.sort(key=lambda r: (int(r.get("block_height", 0)), int(r.get("ts", 0))), reverse=True)
         if type(limit) is int and limit > 0:
             return items[:limit]
         return items
@@ -349,7 +350,7 @@ class GraffitiRegistry:
 
     def _flush(self) -> None:
         with batch("graffiti") as b:
-            current_posts = self.data.get("posts") or {}
+            current_posts = self.data.get("posts", {})
             for art_id, post in current_posts.items():
                 b.put(f"p:{art_id}".encode("utf-8"), serialize_post_binary(post))
             
@@ -358,10 +359,10 @@ class GraffitiRegistry:
                 b.delete(f"p:{deleted_art}".encode("utf-8"))
             self._stored_posts = set(current_posts.keys())
 
-            current_comments = self.data.get("comments") or {}
+            current_comments = self.data.get("comments", {})
             all_comment_art_ids = set(self._stored_counts.get("comments", {}).keys()) | set(current_comments.keys())
             for art_id in all_comment_art_ids:
-                comments = current_comments.get(art_id) or []
+                comments = current_comments.get(art_id, [])
                 for idx, c in enumerate(comments):
                     b.put(f"c:{art_id}:{idx:08d}".encode("utf-8"), serialize_comment_binary(c))
                 prev_count = self._stored_counts.get("comments", {}).get(art_id, 0)
@@ -369,10 +370,10 @@ class GraffitiRegistry:
                     b.delete(f"c:{art_id}:{stale_idx:08d}".encode("utf-8"))
                 self._stored_counts.setdefault("comments", {})[art_id] = len(comments)
 
-            current_payouts = self.data.get("payouts") or {}
+            current_payouts = self.data.get("payouts", {})
             all_payout_art_ids = set(self._stored_counts.get("payouts", {}).keys()) | set(current_payouts.keys())
             for art_id in all_payout_art_ids:
-                payouts = current_payouts.get(art_id) or []
+                payouts = current_payouts.get(art_id, [])
                 for idx, y in enumerate(payouts):
                     b.put(f"y:{art_id}:{idx:08d}".encode("utf-8"), serialize_payout_binary(y))
                 prev_count = self._stored_counts.get("payouts", {}).get(art_id, 0)
@@ -380,10 +381,10 @@ class GraffitiRegistry:
                     b.delete(f"y:{art_id}:{stale_idx:08d}".encode("utf-8"))
                 self._stored_counts.setdefault("payouts", {})[art_id] = len(payouts)
 
-            current_proofs = self.data.get("proofs") or {}
+            current_proofs = self.data.get("proofs", {})
             all_proof_art_ids = set(self._stored_counts.get("proofs", {}).keys()) | set(current_proofs.keys())
             for art_id in all_proof_art_ids:
-                proofs = current_proofs.get(art_id) or []
+                proofs = current_proofs.get(art_id, [])
                 for idx, r in enumerate(proofs):
                     b.put(f"r:{art_id}:{idx:08d}".encode("utf-8"), serialize_proof_binary(r))
                 prev_count = self._stored_counts.get("proofs", {}).get(art_id, 0)

@@ -14,6 +14,11 @@ import threading
 from http.server import BaseHTTPRequestHandler
 from typing import Dict, Any, Optional
 
+if sys.platform == "win32":
+    _winget_links = os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Links")
+    if os.path.isdir(_winget_links) and _winget_links not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = _winget_links + os.pathsep + os.environ.get("PATH", "")
+
 from PIL import Image as PILImage
 
 from tsarchain.utils import config as CFG
@@ -378,7 +383,7 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
                 return
 
             try:
-                total_size = int(meta.get("size_bytes") or meta.get("size") or meta_resp.get("size_bytes") or 0)
+                total_size = int(meta.get("size_bytes") or meta.get("size", 0))
             except (ValueError, TypeError):
                 total_size = 0
 

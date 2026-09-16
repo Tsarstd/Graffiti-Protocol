@@ -49,7 +49,7 @@ class StorageServer:
         meta.setdefault("paid", False)
         meta.setdefault("expire_at_height", 0)
         meta.setdefault("confirmed_at_height", 0)
-        meta.setdefault("state", meta.get("state") or "stored")
+        meta.setdefault("state", "stored")
         meta.setdefault("received_bytes", int(meta.get("received_bytes", 0)))
         meta.setdefault("chunk_size", int(meta.get("chunk_size", CFG.STORAGE_UPLOAD_CHUNK)))
         meta.setdefault("last_proof_epoch", -1)
@@ -75,7 +75,7 @@ class StorageServer:
         self.index.setdefault("files", {})
         self.index.setdefault("bytes_used", 0)
         self.index.setdefault("art_map", {})
-        files = dict(self.index.get("files") or {})
+        files = dict(self.index.get("files", {}))
         for aid, meta in list(files.items()):
             files[aid] = self._normalize_file_meta(aid, meta)
         self.index["files"] = files
@@ -83,7 +83,7 @@ class StorageServer:
         self._save_index()
 
     def _save_index(self):
-        self.index["bytes_used"] = sum(int(v.get("size_bytes", 0)) for v in (self.index.get("files") or {}).values())
+        self.index["bytes_used"] = sum(int(v.get("size_bytes", 0)) for v in self.index.get("files", {}).values())
         self.db.save_index(self.index)
 
     # =========================================================================
@@ -91,7 +91,7 @@ class StorageServer:
     # =========================================================================
 
     def get_index_stats(self) -> Dict[str, Any]:
-        self.index["bytes_used"] = sum(int(v.get("size_bytes", 0)) for v in (self.index.get("files") or {}).values())
+        self.index["bytes_used"] = sum(int(v.get("size_bytes", 0)) for v in self.index.get("files", {}).values())
         return dict(self.index)
 
     def mark_paid(self, graffiti_id: str, art_id: str = "", txid: str = "", block_height: int = 0) -> Dict[str, Any]:
@@ -143,7 +143,7 @@ class StorageServer:
     def run_gc(self, tip_height: int = 0) -> Dict[str, Any]:
         tip_h = int(tip_height or 0)
         expire_after = max(0, int(CFG.GRAFFITI_EXPIRE_AFTER_BLOCKS))
-        files = self.index.get("files", {}) or {}
+        files = self.index.get("files", {})
 
         remove_keys = self._find_expired_keys(files, tip_h, expire_after)
         expired = self._remove_expired_files(files, remove_keys)
@@ -158,12 +158,12 @@ class StorageServer:
 
     def prune_stale_incoming(self, max_age_sec: int = 600) -> int:
         now = int(time.time())
-        files = self.index.get("files", {}) or {}
+        files = self.index.get("files", {})
         stale_keys = []
         for gid, meta in files.items():
             state = str(meta.get("state", "")).lower()
             if state in ("receiving", "appending") and not meta.get("paid"):
-                created = int(meta.get("created_ts", 0) or 0)
+                created = int(meta.get("created_ts", 0))
                 if created > 0 and (now - created) > max_age_sec:
                     stale_keys.append(gid)
         pruned = 0
@@ -183,16 +183,16 @@ class StorageServer:
         aid = str(graffiti_id).strip()
         art_norm = str(art_id).strip().lower()
         tip_h = int(tip_height or 0)
-        files = self.index.get("files", {}) or {}
+        files = self.index.get("files", {})
         if art_norm and not aid:
-            aid = (self.index.get("art_map") or {}).get(art_norm, "")
+            aid = self.index.get("art_map", {}).get(art_norm, "")
 
         meta = files.get(aid) if aid else None
         if not meta:
             return {"status": "error", "reason": "no_such"}
 
-        size = int(meta.get("size_bytes", 0) or 0)
-        art_final = str(meta.get("art_id") or art_norm or "").strip().lower()
+        size = int(meta.get("size_bytes", 0))
+        art_final = str(meta.get("art_id", art_norm)).strip().lower()
         if not art_final:
             meta["missed_proofs"] = int(meta.get("missed_proofs", 0)) + 1
             meta["proof_fail_reason"] = "missing_art_id"
@@ -288,11 +288,11 @@ class StorageServer:
         items = files.items()
         for gid, meta in items:
             if (not meta.get("paid")) and expire_after > 0 and tip_h > 0:
-                expire_h = int(meta.get("expire_at_height", 0) or 0)
+                expire_h = int(meta.get("expire_at_height", 0))
                 if expire_h <= 0:
                     expire_h = tip_h + expire_after
                     meta["expire_at_height"] = expire_h
-            expire_h = int(meta.get("expire_at_height", 0) or 0)
+            expire_h = int(meta.get("expire_at_height", 0))
             if expire_h and tip_h and expire_h <= tip_h and not meta.get("paid"):
                 remove_keys.append(gid)
 
@@ -396,7 +396,7 @@ class StorageServer:
         else:
             msg = outer if type(outer) is dict else {}
 
-        wallet_ident = str(msg.get("wallet_addr") or msg.get("creator_addr") or "").strip().lower()
+        wallet_ident = str(msg.get("wallet_addr") or "").strip().lower()
         node_ident = str(msg.get("node_id") or "").strip().lower()
         identity = wallet_ident or identity or node_ident or None
         mtype = str(msg.get("type", "")).strip().upper()
