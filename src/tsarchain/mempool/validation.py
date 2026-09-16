@@ -130,15 +130,21 @@ class TxMempoolValidator:
         if epoch >= 0:
             latest_proof = reg.get_latest_proof_epoch(art_id)
             if latest_proof is None or latest_proof < epoch:
-                self.last_error_reason = "payout_missing_proof"
-                log.warning(
-                    "[mempool] payout reject art=%s reason=%s last_proof=%s epoch=%s",
-                    art_id[:16],
-                    self.last_error_reason,
-                    latest_proof,
-                    epoch,
-                )
-                return False
+                proof_epoch = int(payout_meta.get("proof_epoch", -1))
+                if proof_epoch < 0:
+                    proof_height = int(payout_meta.get("proof_height", payout_meta.get("height", -1)))
+                    if proof_height >= 0:
+                        proof_epoch = GRAFFITI.compute_proof_epoch(proof_height)
+                if proof_epoch < epoch:
+                    self.last_error_reason = "payout_missing_proof"
+                    log.warning(
+                        "[mempool] payout reject art=%s reason=%s last_proof=%s epoch=%s",
+                        art_id[:16],
+                        self.last_error_reason,
+                        latest_proof,
+                        epoch,
+                    )
+                    return False
         return True
 
     def _validate_payout_recipients_and_balance(self, tx: Tx, payout_meta: dict[str, Any], post: dict[str, Any]) -> bool:
@@ -154,12 +160,15 @@ class TxMempoolValidator:
 
         epoch = int(payout_meta.get("epoch", -1))
         reg = self.utxo._graffiti_registry or GraffitiRegistry()
-        proof_entry = reg.get_proof(art_id, "", epoch)
+        proof_storer = str(payout_meta.get("proof_storer") or "").strip().lower()
+        proof_entry = reg.get_proof(art_id, proof_storer, epoch) if proof_storer else None
         valid_storer = ""
         if type(proof_entry) is dict:
             storer_val = proof_entry.get("storer")
             if type(storer_val) is str:
                 valid_storer = storer_val.strip().lower()
+        if not valid_storer and proof_storer:
+            valid_storer = proof_storer
 
         paymap: dict[str, int] = {}
         for out in tx.outputs or []:
@@ -276,8 +285,14 @@ class TxMempoolValidator:
             return False
 
         if epoch >= 0 and reg.get_latest_proof_epoch(art_id) < epoch:
-            self.last_error_reason = "payout_missing_proof"
-            return False
+            proof_epoch = int(meta.get("proof_epoch", -1))
+            if proof_epoch < 0:
+                proof_height = int(meta.get("proof_height", meta.get("height", -1)))
+                if proof_height >= 0:
+                    proof_epoch = GRAFFITI.compute_proof_epoch(proof_height)
+            if proof_epoch < epoch:
+                self.last_error_reason = "payout_missing_proof"
+                return False
 
         recs = meta.get("recipients")
         if not recs or type(recs) is not list:

@@ -332,12 +332,15 @@ class BlockValidator:
         if epoch >= 0 and not self._validate_payout_proof(meta, epoch, art_id, reg):
             return False
 
-        proof_entry = reg.get_proof(art_id, "", epoch) if reg else None
+        proof_storer = str(meta.get("proof_storer") or "").strip().lower()
+        proof_entry = reg.get_proof(art_id, proof_storer, epoch) if (reg and proof_storer) else None
         valid_storer = ""
         if type(proof_entry) is dict:
             storer_val = proof_entry.get("storer")
             if type(storer_val) is str:
                 valid_storer = storer_val.strip().lower()
+        if not valid_storer and proof_storer:
+            valid_storer = proof_storer
 
         recs = meta.get("recipients")
         if type(recs) is not list or not recs:
@@ -372,8 +375,14 @@ class BlockValidator:
             return False
         latest_epoch = reg.get_latest_proof_epoch(art_id)
         if latest_epoch is None or latest_epoch < epoch:
-            self.blockchain._last_block_validation_error = "payout_missing_proof"
-            return False
+            proof_epoch = int(meta.get("proof_epoch", -1))
+            if proof_epoch < 0:
+                proof_height = int(meta.get("proof_height", meta.get("height", -1)))
+                if proof_height >= 0:
+                    proof_epoch = GRAFFITI.compute_proof_epoch(proof_height)
+            if proof_epoch < epoch:
+                self.blockchain._last_block_validation_error = "payout_missing_proof"
+                return False
         return True
 
 
