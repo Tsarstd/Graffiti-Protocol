@@ -62,10 +62,14 @@ if (Get-Command "npm" -ErrorAction SilentlyContinue) {
 
 # 5. INSTALL FFMPEG (for video thumbnails in Web Backend)
 Print-Step "5/9: Checking/Installing FFmpeg (for video thumbnails)..."
+$wingetLinks = "$env:LOCALAPPDATA\Microsoft\WinGet\Links"
 if (!(Get-Command "ffmpeg" -ErrorAction SilentlyContinue)) {
     Write-Host "ffmpeg not found. Installing via winget..."
     winget install -e --id Gyan.FFmpeg --accept-source-agreements --accept-package-agreements
     $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+    if ((Test-Path $wingetLinks) -and ($env:Path -notlike "*$wingetLinks*")) {
+        $env:Path = "$wingetLinks;$env:Path"
+    }
 } else {
     Write-Host "ffmpeg is already installed."
 }
@@ -98,9 +102,14 @@ Print-Step "Creating helper script 'activate_env.ps1' for easy environment activ
 $helperScript = @"
 # Helper script to activate venv and set PYTHONPATH
 # USAGE: .\activate_env.ps1
+`$scriptDir = if (`$PSScriptRoot) { `$PSScriptRoot } else { `$PWD }
 Write-Host "Activating virtual environment..." -ForegroundColor Cyan
-.\.venv\Scripts\Activate.ps1
-`$env:PYTHONPATH = "`$PWD\src"
+& "`$scriptDir\.venv\Scripts\Activate.ps1"
+`$env:PYTHONPATH = "`$scriptDir\src"
+`$wingetLinks = "`$env:LOCALAPPDATA\Microsoft\WinGet\Links"
+if ((Test-Path `$wingetLinks) -and (`$env:Path -notlike "*`$wingetLinks*")) {
+    `$env:Path = "`$wingetLinks;`$env:Path"
+}
 Write-Host "Environment ready! PYTHONPATH is set to `$env:PYTHONPATH" -ForegroundColor Green
 Write-Host "You are now in the virtual environment." -ForegroundColor Green
 "@
