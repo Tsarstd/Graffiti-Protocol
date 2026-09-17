@@ -111,7 +111,6 @@ def _leading_zero_bits(digest: bytes) -> int:
             continue
         total += 8 - b.bit_length()
         break
-    log.debug("[_leading_zero_bits] total: %s", total)
     return total
 
 

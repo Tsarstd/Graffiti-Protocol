@@ -147,8 +147,8 @@ class ReceiveHandler(BroadcastHandlerProxy):
                 return True
             else:
                 return False
-        except Exception:
-            log.exception("[receive_tx] Error processing incoming TX")
+        except Exception as e:
+            log.warning("[receive_tx] Error processing incoming TX: %s", e)
             return False
 
 

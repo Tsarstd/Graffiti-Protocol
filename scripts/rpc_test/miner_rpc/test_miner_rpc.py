@@ -16,7 +16,6 @@ Logs are saved automatically to 'logging/rpc_miner_test.log'.
 
 from __future__ import annotations
 
-import sys
 import time
 import json
 import socket
