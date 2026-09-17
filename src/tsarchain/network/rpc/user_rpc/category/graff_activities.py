@@ -62,7 +62,10 @@ def get_art(self, message, pow_obj, base_identity, *,
     art_id_raw = str(message.get("art_id") or "").strip()
     if not art_id_raw:
         return {"type": "GRAFFITI_GET_ART", "error": "missing_art_id"}
-    art_id = GRAFFITI._normalize_art_id(art_id_raw, prefer_prefix=False)
+    try:
+        art_id = GRAFFITI._normalize_art_id(art_id_raw, prefer_prefix=False)
+    except (ValueError, TypeError):
+        return {"type": "GRAFFITI_GET_ART", "art_id": art_id_raw, "error": "bad_art_id"}
     reg = self.broadcast.utxodb._graffiti_registry
     post = reg.get_post(art_id) if reg else None
     if not post:
