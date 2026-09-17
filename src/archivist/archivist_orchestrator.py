@@ -298,7 +298,7 @@ class ArchivistOrchestrator:
             if not file_entry:
                 continue
             meta = file_entry.get("meta", {})
-            if meta.get("paid"):
+            if meta.get("paid") and meta.get("art_id"):
                 continue
             bh = int(art.get("block_height", 0))
             if bh <= 0:

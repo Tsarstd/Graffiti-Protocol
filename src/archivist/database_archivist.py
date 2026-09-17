@@ -57,9 +57,10 @@ class ArchivistDatabase:
         self._kv_guard = None
 
         if self.enable_index:
-            self._kv_index = self._open_store(CFG.ARCHIVIST_INDEX_DB_PATH)
-            guard_path = CFG.ARCHIVIST_PAYOUT_GUARD_DB_PATH
+            index_path = os.path.join(self.storage_dir, "index_db") if storage_dir else CFG.ARCHIVIST_INDEX_DB_PATH
+            guard_path = os.path.join(self.storage_dir, "payout_guard") if storage_dir else CFG.ARCHIVIST_PAYOUT_GUARD_DB_PATH
             guard_map_size = CFG.ARCHIVIST_PAYOUT_GUARD_MAP_SIZE
+            self._kv_index = self._open_store(index_path)
             self._kv_guard = self._open_store(guard_path, init_size=guard_map_size)
 
 

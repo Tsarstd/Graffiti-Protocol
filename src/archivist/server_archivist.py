@@ -69,6 +69,30 @@ class StorageServer:
             self.index.setdefault("art_map", {})[art_id] = aid
         return meta
 
+    def _reconcile_blobs(self, files: dict) -> None:
+        blobs_dir = os.path.join(self.storage_dir, "blobs")
+        if not os.path.isdir(blobs_dir):
+            return
+        for fname in os.listdir(blobs_dir):
+            if not fname.endswith(".bin"):
+                continue
+            gid = fname[:-4]
+            if gid not in files:
+                full_p = os.path.join(blobs_dir, fname)
+                try:
+                    sz = os.path.getsize(full_p)
+                except OSError:
+                    continue
+                parts = gid.split("_")
+                sha = parts[0].lower() if len(parts) >= 2 and len(parts[0]) == 64 else ""
+                files[gid] = self._normalize_file_meta(gid, {
+                    "size_bytes": sz,
+                    "sha256": sha,
+                    "path": os.path.normpath(full_p).replace("\\", "/"),
+                    "state": "stored",
+                    "paid": True,
+                })
+
     def _load_index(self):
         os.makedirs(self.storage_dir, exist_ok=True)
         self.index = self.db.load_index()
@@ -78,6 +102,7 @@ class StorageServer:
         files = dict(self.index.get("files", {}))
         for aid, meta in list(files.items()):
             files[aid] = self._normalize_file_meta(aid, meta)
+        self._reconcile_blobs(files)
         self.index["files"] = files
         self.index["bytes_used"] = sum(int(v.get("size_bytes", 0)) for v in files.values())
         self._save_index()
