@@ -701,6 +701,108 @@ def test_save_chain_prune_when_tip_lower(storage, monkeypatch):
             batch_mock.put.assert_not_called()
 
 
+def test_cumulative_metrics_incremental_and_reorg(storage):
+    # Setup blocks
+    tx_cb0 = Mock()
+    tx_cb0.outputs = [Mock(amount=50_000_000_000, address="tsar1_miner_a")]
+    tx_cb0.to_address = "tsar1_miner_a"
+    tx_cb0.to_storage_bytes = Mock(return_value=b'tx_cb0_bytes')
+    b0 = Mock()
+    b0.height = 0
+    b0.transactions = [tx_cb0]
+    b0.serialize = Mock(return_value=b'b0_raw_bytes')
+
+    storage.chain = [b0]
+    cs = storage.chain_storage
+
+    # First sync: height 0
+    cs._sync_cumulative_metrics(storage.chain)
+    assert cs._metrics_synced_height == 0
+    assert cs._cumulative_total_txs == 1
+    assert cs._cumulative_non_coinbase_txs == 0
+    assert cs._cumulative_miner_counter["tsar1_miner_a"] == 1
+
+    # Second block with non-coinbase tx and fee
+    tx_cb1 = Mock()
+    tx_cb1.outputs = [Mock(amount=50_000_005_000, address="tsar1_miner_b")]
+    tx_cb1.to_address = "tsar1_miner_b"
+    tx_cb1.to_storage_bytes = Mock(return_value=b'tx_cb1_bytes')
+    tx_regular = Mock()
+    tx_regular.outputs = []
+    tx_regular.to_storage_bytes = Mock(return_value=b'tx_regular_bytes')
+    b1 = Mock()
+    b1.height = 1
+    b1.transactions = [tx_cb1, tx_regular]
+    b1.serialize = Mock(return_value=b'b1_raw_bytes')
+
+    storage.chain.append(b1)
+    cs._sync_cumulative_metrics(storage.chain)
+    assert cs._metrics_synced_height == 1
+    assert cs._cumulative_total_txs == 3  # 1 + 2
+    assert cs._cumulative_non_coinbase_txs == 1
+    assert cs._cumulative_fees_paid == 5_000
+    assert cs._cumulative_miner_counter["tsar1_miner_b"] == 1
+    assert cs._cumulative_miner_counter["tsar1_miner_a"] == 1
+
+    # Reorg test: chain truncated to height 0
+    storage.chain = [b0]
+    cs._sync_cumulative_metrics(storage.chain)
+    assert cs._metrics_synced_height == 0
+    assert cs._cumulative_total_txs == 1
+    assert cs._cumulative_non_coinbase_txs == 0
+    assert cs._cumulative_fees_paid == 0
+    assert cs._cumulative_miner_counter["tsar1_miner_a"] == 1
+    assert "tsar1_miner_b" not in cs._cumulative_miner_counter
+
+
+def test_init_cumulative_metrics_from_snapshot(storage):
+    cs = storage.chain_storage
+    mock_snapshot = {
+        "chain": {"tip_height": 100, "total_block_size_bytes": 99999},
+        "transactions": {"total_txs": 500, "total_non_coinbase_txs": 400, "total_fees_paid": 12345},
+        "miners_snapshot": {"top_miners": [["tsar1_miner_x", 80], ["tsar1_miner_y", 20]]},
+    }
+    cs._init_cumulative_metrics_from_snapshot(mock_snapshot)
+    assert cs._metrics_synced_height == 100
+    assert cs._cumulative_block_size_bytes == 99999
+    assert cs._cumulative_total_txs == 500
+    assert cs._cumulative_non_coinbase_txs == 400
+    assert cs._cumulative_fees_paid == 12345
+    assert cs._cumulative_miner_counter["tsar1_miner_x"] == 80
+    assert cs._cumulative_miner_counter["tsar1_miner_y"] == 20
+
+
+def test_immature_coinbase_o1_window(storage):
+    cs = storage.chain_storage
+    # Create 4 blocks with coinbase 50
+    blocks = []
+    for h in range(4):
+        tx_cb = Mock()
+        tx_cb.outputs = [Mock(amount=50_000_000_000)]
+        b = Mock()
+        b.height = h
+        b.transactions = [tx_cb]
+        blocks.append(b)
+
+    utxo_mock = Mock()
+    utxo_mock._lock = threading.Lock()
+    utxo_mock.utxos = {
+        "tx0:0": {"tx_out": Mock(amount=50_000_000_000)},
+        "tx1:0": {"tx_out": Mock(amount=50_000_000_000)},
+        "tx2:0": {"tx_out": Mock(amount=50_000_000_000)},
+        "tx3:0": {"tx_out": Mock(amount=50_000_000_000)},
+    }
+
+    # With COINBASE_MATURITY = 3, tip = 3 (heights 0, 1, 2, 3)
+    # Immature blocks are heights: tip + 2 - maturity = 3 + 2 - 3 = 2, so heights 2 and 3 (2 blocks = 100_000_000_000)
+    CFG.COINBASE_MATURITY = 3
+    res = cs._compute_utxo_supply_stats(utxo_mock, tip_height=3, chain=blocks)
+    assert res["utxo_set_size"] == 4
+    assert res["utxo_total_value"] == 200_000_000_000
+    assert res["immature_coinbase"] == 100_000_000_000
+    assert res["circulating_estimate"] == 100_000_000_000
+
+
 # ----------------------------------------------------------------------
 # Run tests
 if __name__ == "__main__":

@@ -38,6 +38,7 @@ class ChainStorage:
     def __init__(self, blockchain: "Blockchain"):
         self.blockchain = blockchain
         self._backup_lock = threading.Lock()
+        self._reset_cumulative_metrics()
 
 
     def save_chain(self, *, force_full: bool = False):
@@ -137,6 +138,7 @@ class ChainStorage:
         self.blockchain.total_supply = int(data.get("total_supply", 0) or 0)
         self.blockchain.total_blocks = int(data.get("total_blocks", 0) or 0)
         self.blockchain.supply_in_tsar = self.blockchain.total_supply / CFG.TSAR if self.blockchain.total_supply else 0
+        self._init_cumulative_metrics_from_snapshot(data)
 
 
 # =============================================================================
@@ -257,6 +259,9 @@ class ChainStorage:
     def _prune_chain_store(self, start_height: int) -> None:
         if start_height < 0:
             start_height = 0
+
+        if self._metrics_synced_height >= start_height:
+            self._reset_cumulative_metrics()
             
         keys_to_remove: list[bytes] = []
         for key, _ in iter_prefix('chain', b'h:'):
@@ -275,6 +280,7 @@ class ChainStorage:
         self.blockchain._persisted_height = -1
         self.blockchain._chain_dirty_from = None
         self.blockchain._snapshot_last_backup_height = -1
+        self._reset_cumulative_metrics()
 
 
     def _backup_snapshot_enabled(self) -> bool:
@@ -483,6 +489,79 @@ class ChainStorage:
         return data
 
 
+    def _reset_cumulative_metrics(self) -> None:
+        self._metrics_synced_height: int = -1
+        self._cumulative_block_size_bytes: int = 0
+        self._cumulative_total_txs: int = 0
+        self._cumulative_non_coinbase_txs: int = 0
+        self._cumulative_fees_paid: int = 0
+        self._cumulative_miner_counter: Counter[str] = Counter()
+
+
+    def _init_cumulative_metrics_from_snapshot(self, data: dict) -> None:
+        if type(data) is not dict:
+            return
+        chain_info = data.get("chain")
+        if type(chain_info) is not dict:
+            chain_info = {}
+        tx_info = data.get("transactions")
+        if type(tx_info) is not dict:
+            tx_info = {}
+        miners_info = data.get("miners_snapshot")
+        if type(miners_info) is not dict:
+            miners_info = {}
+
+        snap_height = chain_info.get("tip_height")
+        if snap_height is not None and type(snap_height) is int and snap_height >= 0:
+            self._metrics_synced_height = snap_height
+            self._cumulative_block_size_bytes = int(chain_info.get("total_block_size_bytes", 0) or 0)
+            self._cumulative_total_txs = int(tx_info.get("total_txs", 0) or 0)
+            self._cumulative_non_coinbase_txs = int(tx_info.get("total_non_coinbase_txs", 0) or 0)
+            self._cumulative_fees_paid = int(tx_info.get("total_fees_paid", 0) or 0)
+            self._cumulative_miner_counter = Counter()
+            for row in miners_info.get("top_miners") or []:
+                if type(row) in (list, tuple) and len(row) >= 2:
+                    self._cumulative_miner_counter[str(row[0])] = int(row[1])
+
+
+    def _sync_cumulative_metrics(self, chain: list) -> None:
+        chain_len = len(chain)
+        tip_height = chain_len - 1
+        if tip_height < 0:
+            self._reset_cumulative_metrics()
+            return
+
+        if tip_height < self._metrics_synced_height:
+            self._reset_cumulative_metrics()
+
+        if self._metrics_synced_height >= tip_height:
+            return
+
+        start_h = self._metrics_synced_height + 1
+        for h in range(start_h, chain_len):
+            blk = chain[h]
+            self._cumulative_block_size_bytes += estimate_block_size_bytes(blk)
+            txs = blk.transactions or []
+            tx_count = len(txs)
+            self._cumulative_total_txs += tx_count
+            self._cumulative_non_coinbase_txs += max(0, tx_count - 1)
+            if txs:
+                coinbase = txs[0]
+                outputs = coinbase.outputs or []
+                cb_amt = sum(int(out.amount or 0) for out in outputs)
+                base = self.blockchain.scheduled_reward(int(blk.height or 0))
+                fee = max(0, cb_amt - base)
+                self._cumulative_fees_paid += fee
+
+                miner_addr = coinbase.to_address
+                if not miner_addr and outputs:
+                    miner_addr = outputs[0].address
+                if miner_addr:
+                    self._cumulative_miner_counter[str(miner_addr)] += 1
+
+        self._metrics_synced_height = tip_height
+
+
     def _compute_state_snapshot(self) -> dict:
         tip_height = self.blockchain.height
         utxo = self.blockchain.ensure_utxodb() or UTXODB()
@@ -493,10 +572,11 @@ class ChainStorage:
             return dict(cache["data"])
 
         chain = self.blockchain.chain or []
+        self._sync_cumulative_metrics(chain)
         chain_stats = self._compute_chain_stats(chain)
         tx_stats = self._compute_transaction_and_miner_stats(chain)
         mempool_stats = self._compute_mempool_stats()
-        supply_stats = self._compute_utxo_supply_stats(utxo, tip_height)
+        supply_stats = self._compute_utxo_supply_stats(utxo, tip_height, chain)
         graffiti_stats = self._compute_graffiti_stats()
 
         emitted_subsidy = self.blockchain.calculate_total_supply()
@@ -576,7 +656,7 @@ class ChainStorage:
     def _compute_chain_stats(self, chain: list) -> dict:
         total_blocks = len(chain)
         tip_block = chain[-1] if chain else None
-        total_block_size_bytes = sum(estimate_block_size_bytes(b) for b in chain)
+        total_block_size_bytes = int(self._cumulative_block_size_bytes)
 
         cw = tip_block.chainwork if tip_block else None
         if cw is None:
@@ -622,35 +702,11 @@ class ChainStorage:
 
 
     def _compute_transaction_and_miner_stats(self, chain: list) -> dict:
-        total_txs = 0
-        total_non_coinbase_txs = 0
-        total_fees_paid = 0
-        miner_counter: Counter[str] = Counter()
-        for blk in chain:
-            txs = blk.transactions or []
-            total_txs += len(txs)
-            total_non_coinbase_txs += max(0, len(txs) - 1)
-            if not txs:
-                continue
-            coinbase = txs[0]
-            outputs = coinbase.outputs or []
-            cb_amt = 0
-            if outputs:
-                cb_amt = int(outputs[0].amount or 0)
-            base = self.blockchain.scheduled_reward(int(blk.height or 0))
-            fee = max(0, cb_amt - base)
-            total_fees_paid += fee
-            miner_addr = coinbase.to_address
-
-            if not miner_addr and outputs:
-                miner_addr = outputs[0].address
-            if miner_addr:
-                miner_counter[str(miner_addr)] += 1
         return {
-            "total_txs": total_txs,
-            "total_non_coinbase_txs": total_non_coinbase_txs,
-            "total_fees_paid": total_fees_paid,
-            "miner_counter": miner_counter,
+            "total_txs": int(self._cumulative_total_txs),
+            "total_non_coinbase_txs": int(self._cumulative_non_coinbase_txs),
+            "total_fees_paid": int(self._cumulative_fees_paid),
+            "miner_counter": Counter(self._cumulative_miner_counter),
         }
 
 
@@ -672,32 +728,33 @@ class ChainStorage:
         }
 
 
-    def _compute_utxo_supply_stats(self, utxo, tip_height: int) -> dict:
-        circulating_estimate = 0
-        immature_coinbase = 0
-        utxo_total_value = 0
+    def _compute_utxo_supply_stats(self, utxo, tip_height: int, chain: list | None = None) -> dict:
         maturity = int(CFG.COINBASE_MATURITY)
+        immature_coinbase = 0
+        if chain is None:
+            chain = self.blockchain.chain or []
+        if chain and tip_height >= 0:
+            start_immature_h = max(0, tip_height - maturity + 2)
+            for h in range(start_immature_h, tip_height + 1):
+                if h < len(chain):
+                    blk = chain[h]
+                    txs = blk.transactions or []
+                    if txs:
+                        cb = txs[0]
+                        outs = cb.outputs or []
+                        immature_coinbase += sum(int(out.amount or 0) for out in outs)
 
         with utxo._lock:  # type: ignore[attr-defined]
-            utxo_items = list(utxo.utxos.values())
+            utxos_dict = utxo.utxos
+            utxo_set_size = len(utxos_dict)
+            utxo_total_value = sum(int(e["tx_out"].amount or 0) for e in utxos_dict.values())
 
-        for entry in utxo_items:
-            tx_out = entry["tx_out"]
-            amount = int(tx_out.amount or 0)
-            if amount <= 0:
-                continue
-
-            utxo_total_value += amount
-            if entry.get("is_coinbase", False) and (tip_height - int(entry.get("block_height", 0)) + 1) < maturity:
-                immature_coinbase += amount
-            else:
-                circulating_estimate += amount
-
+        circulating_estimate = max(0, utxo_total_value - immature_coinbase)
         return {
-            "utxo_set_size": len(utxo_items),
-            "circulating_estimate": circulating_estimate,
-            "immature_coinbase": immature_coinbase,
-            "utxo_total_value": utxo_total_value,
+            "utxo_set_size": int(utxo_set_size),
+            "circulating_estimate": int(circulating_estimate),
+            "immature_coinbase": int(immature_coinbase),
+            "utxo_total_value": int(utxo_total_value),
         }
 
 
