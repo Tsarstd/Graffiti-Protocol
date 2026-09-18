@@ -71,8 +71,15 @@ def color_text(text: str, color: str) -> str:
 
 
 # ============================================================
-# DATABASE PATHS & DEFINITIONS (Aligned with lmdb_to_json.py)
+# DATABASE PATHS & DOMAINS (Aligned with lmdb_to_json.py)
 # ============================================================
+DOMAINS = {
+    'node': 'data/node',
+    'keys': 'data/keys',
+    'archivist': 'data/archivist/storage',
+    'web': 'data/web',
+}
+
 NODE_SUBDBS = ['chain', 'state', 'utxo', 'mempool', 'graffiti', 'chat_prekeys']
 NODE_SUBDB_PATHS = {
     'chain': 'data/node/chain',
@@ -82,10 +89,20 @@ NODE_SUBDB_PATHS = {
     'graffiti': 'data/node/graffiti',
     'chat_prekeys': 'data/node/chat_prekeys',
 }
+
 KEYS_SUBDBS = ['node_secrets', 'secure_wallet', 'wallet_peer_keys', 'stor_peer_keys']
 KEYS_ENV_PATH = "data/keys"
-LEGACY_NODE_PATH = "data/node"
 
+ARCHIVIST_ENV_PATH = "data/archivist/storage"
+ARCHIVIST_TARGETS = {
+    'index_db': ('data/archivist/storage/index_db', 'idx'),
+    'payout_guard': ('data/archivist/storage/payout_guard', 'guard'),
+}
+
+WEB_ENV_PATH = "data/web"
+WEB_SUBDBS = ['web_cache', 'web_media', 'web_blocks']
+
+LEGACY_NODE_PATH = "data/node"
 SUBDBS = NODE_SUBDBS
 
 
@@ -106,7 +123,7 @@ def is_lmdb_dir(path: str) -> bool:
 def get_lmdb_envs(target_dir: str) -> dict[str, str]:
     """
     Returns mapping {name: env_path}.
-    - If target_dir is directly an LMDB environment (e.g. data/node/chain, data/keys), returns {basename: target_dir}.
+    - If target_dir is directly an LMDB environment (e.g. data/node/chain, data/keys, data/web), returns {basename: target_dir}.
     - If target_dir is a container directory (e.g. data/node, data/archivist/storage), discovers all child LMDB environments.
     """
     if not os.path.isdir(target_dir):
@@ -127,6 +144,95 @@ def get_lmdb_envs(target_dir: str) -> dict[str, str]:
                 envs[name] = p
 
     return envs
+
+
+def get_env_subdbs_info(env_path: str) -> dict[str, int]:
+    """
+    Returns mapping of {subdb_name: entry_count} for an LMDB environment.
+    If it has named sub-databases (like data/web or data/keys or index_db), inspects each.
+    """
+    res = {}
+    try:
+        env = lmdb.open(env_path, readonly=True, max_dbs=32, lock=False)
+        named = []
+        try:
+            root_dbi = env.open_db(None, create=False)
+            with env.begin(db=root_dbi, write=False) as txn:
+                with txn.cursor() as cur:
+                    for k, _ in cur:
+                        try:
+                            named.append(k.decode('utf-8'))
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+        if named:
+            for s in named:
+                try:
+                    dbi = env.open_db(s.encode('utf-8'), create=False)
+                    with env.begin(db=dbi, write=False) as txn:
+                        res[s] = txn.stat()['entries']
+                except Exception:
+                    pass
+        else:
+            try:
+                root_dbi = env.open_db(None, create=False)
+                with env.begin(db=root_dbi, write=False) as txn:
+                    res[os.path.basename(env_path)] = txn.stat()['entries']
+            except Exception:
+                pass
+        env.close()
+    except Exception:
+        pass
+    return res
+
+
+def peek_env_keys(env_path: str, limit: int = 3) -> dict[str, list[str]]:
+    """
+    Returns mapping of {subdb_name: [sample_keys]} for all sub-databases in an LMDB environment.
+    """
+    out = {}
+    try:
+        env = lmdb.open(env_path, readonly=True, max_dbs=32, lock=False)
+        named = []
+        try:
+            root_dbi = env.open_db(None, create=False)
+            with env.begin(db=root_dbi, write=False) as txn:
+                with txn.cursor() as cur:
+                    for k, _ in cur:
+                        try:
+                            named.append(k.decode('utf-8'))
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+        targets = named if named else [None]
+        for s in targets:
+            label = s if s else os.path.basename(env_path)
+            try:
+                dbi = env.open_db(s.encode('utf-8') if s else None, create=False)
+                keys = []
+                with env.begin(db=dbi, write=False) as txn:
+                    with txn.cursor() as cur:
+                        for k, _ in cur:
+                            if k == b'__meta__':
+                                continue
+                            try:
+                                keys.append(k.decode('utf-8'))
+                            except Exception:
+                                keys.append(str(k))
+                            if len(keys) >= limit:
+                                break
+                if keys:
+                    out[label] = keys
+            except Exception:
+                pass
+        env.close()
+    except Exception:
+        pass
+    return out
 
 
 def _bytes_to_human(size_bytes: int) -> str:
@@ -325,6 +431,56 @@ def compact_database(db_dir: str, backup: bool = True) -> bool:
 
 def open_subdb_env(base_dir: str, db_name: str | None = None) -> tuple[lmdb.Environment | None, Any]:
     if db_name:
+        # Check archivist aliases
+        if db_name in ('index_db', 'idx'):
+            idx_p = os.path.join(base_dir, 'index_db') if os.path.isdir(os.path.join(base_dir, 'index_db')) else 'data/archivist/storage/index_db'
+            if is_lmdb_dir(idx_p):
+                try:
+                    env = lmdb.open(idx_p, readonly=True, max_dbs=32, lock=False)
+                    try:
+                        dbi = env.open_db(b'idx', create=False)
+                    except lmdb.Error:
+                        dbi = env.open_db(None, create=False)
+                    return env, dbi
+                except Exception:
+                    pass
+        elif db_name in ('payout_guard', 'guard'):
+            pg_p = os.path.join(base_dir, 'payout_guard') if os.path.isdir(os.path.join(base_dir, 'payout_guard')) else 'data/archivist/storage/payout_guard'
+            if is_lmdb_dir(pg_p):
+                try:
+                    env = lmdb.open(pg_p, readonly=True, max_dbs=32, lock=False)
+                    try:
+                        dbi = env.open_db(b'guard', create=False)
+                    except lmdb.Error:
+                        dbi = env.open_db(None, create=False)
+                    return env, dbi
+                except Exception:
+                    pass
+        elif db_name in WEB_SUBDBS:
+            web_p = base_dir if os.path.basename(os.path.abspath(base_dir)) == 'web' else 'data/web'
+            if is_lmdb_dir(web_p):
+                try:
+                    env = lmdb.open(web_p, readonly=True, max_dbs=32, lock=False)
+                    try:
+                        dbi = env.open_db(db_name.encode('utf-8'), create=False)
+                        return env, dbi
+                    except lmdb.Error:
+                        env.close()
+                except Exception:
+                    pass
+        elif db_name in KEYS_SUBDBS:
+            keys_p = base_dir if os.path.basename(os.path.abspath(base_dir)) == 'keys' else 'data/keys'
+            if is_lmdb_dir(keys_p):
+                try:
+                    env = lmdb.open(keys_p, readonly=True, max_dbs=32, lock=False)
+                    try:
+                        dbi = env.open_db(db_name.encode('utf-8'), create=False)
+                        return env, dbi
+                    except lmdb.Error:
+                        env.close()
+                except Exception:
+                    pass
+
         # 1. Dedicated subdirectory e.g. base_dir/chain or base_dir/utxo
         dedicated = os.path.join(base_dir, db_name)
         if is_lmdb_dir(dedicated):
@@ -356,14 +512,12 @@ def open_subdb_env(base_dir: str, db_name: str | None = None) -> tuple[lmdb.Envi
         try:
             env = lmdb.open(base_dir, readonly=True, max_dbs=32, lock=False)
             if db_name:
-                # If target directory matches db_name
                 if os.path.basename(os.path.abspath(base_dir)) == db_name:
                     try:
                         dbi = env.open_db(db_name.encode('utf-8'), create=False)
                     except lmdb.Error:
                         dbi = env.open_db(None, create=False)
                     return env, dbi
-                # Otherwise, it must be a named subdb inside this environment
                 try:
                     dbi = env.open_db(db_name.encode('utf-8'), create=False)
                     return env, dbi
@@ -518,21 +672,22 @@ def _render_payouts(reg: dict, limit: int = 10) -> None:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
-        description='LMDB quick stats, health check, and compaction for TsarChain.',
+        description='LMDB quick stats, health check, and compaction for TsarChain (Node, Archivist, Web, Keys).',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   %(prog)s                             # Interactive menu
-  %(prog)s --db data/node              # Quick summary for node databases
-  %(prog)s --health                    # Comprehensive health check
-  %(prog)s --size-only                 # Storage breakdown & total size
-  %(prog)s --compact                   # Compact database (with backup)
-  %(prog)s --compact --no-backup       # Compact without backup
-  %(prog)s --detail utxo --peek 5      # Detailed UTXO sample
-  %(prog)s --detail chain --peek 5     # Detailed Chain block sample
-  %(prog)s --detail mempool            # Detailed Mempool transactions
-  %(prog)s --detail state              # State key-values
-  %(prog)s --peek 5                    # Peek 5 keys per sub-database
+  %(prog)s --domain node               # Quick summary for node databases
+  %(prog)s --domain archivist          # Quick summary for archivist databases
+  %(prog)s --domain web                # Quick summary for web explorer cache
+  %(prog)s --domain keys               # Quick summary for node secrets & wallets
+  %(prog)s --domain all                # Complete summary across all domains
+  %(prog)s --domain web --size-only    # Storage breakdown of web domain
+  %(prog)s --domain archivist --compact# Compact archivist storage
+  %(prog)s --detail idx --peek 5       # Show archivist index_db records
+  %(prog)s --detail guard --peek 5     # Show archivist payout guard records
+  %(prog)s --detail web_cache          # Show cached web responses
+  %(prog)s --detail web_blocks         # Show cached explorer blocks
         """,
     )
 
@@ -541,6 +696,12 @@ Examples:
         dest='db_dir',
         default=_default_db_dir(),
         help='LMDB directory (default: from config or data/node)',
+    )
+    ap.add_argument(
+        '--domain',
+        dest='domain',
+        choices=['node', 'keys', 'archivist', 'web', 'all'],
+        help='Target specific domain (node, keys, archivist, web, all)',
     )
     ap.add_argument(
         '--peek',
@@ -552,7 +713,12 @@ Examples:
     ap.add_argument(
         '--detail',
         dest='detail',
-        choices=['utxo', 'mempool', 'chain', 'state', 'graffiti', 'payout', 'chat_prekeys', 'prekeys'],
+        choices=[
+            'utxo', 'mempool', 'chain', 'state', 'graffiti', 'payout', 'chat_prekeys', 'prekeys',
+            'index_db', 'idx', 'payout_guard', 'guard',
+            'web_cache', 'web_media', 'web_blocks',
+            'node_secrets', 'secrets',
+        ],
         help='Show detailed items for a subdb',
     )
 
@@ -586,9 +752,7 @@ Examples:
     return ap
 
 
-def run_tool(args) -> int:
-    db_dir = args.db_dir
-
+def _run_single_target(db_dir: str, args) -> int:
     if not os.path.isdir(db_dir):
         clog(f"DB dir not found: {db_dir}")
         return 1
@@ -600,7 +764,7 @@ def run_tool(args) -> int:
 
     # 2. Health check mode
     if getattr(args, "health", False):
-        clog("🔍 LMDB Storage Health Check")
+        clog(f"🔍 LMDB Storage Health Check ({db_dir})")
         clog("=" * 50)
         envs = get_lmdb_envs(db_dir)
         if not envs:
@@ -640,7 +804,7 @@ def run_tool(args) -> int:
             scan_dirs = [envs[k] for k in envs] if envs else [db_dir]
             for p in scan_dirs:
                 total_sz += sum(f.stat().st_size for f in os.scandir(p) if f.is_file())
-            clog(f"Total Storage: {_bytes_to_human(total_sz)}")
+            clog(f"Total Storage ({db_dir}): {_bytes_to_human(total_sz)}")
         return 0
 
     # 4. Detail dump mode
@@ -833,14 +997,111 @@ def run_tool(args) -> int:
                 env_pk.close()
             return 0
 
+        elif detail_choice in ('index_db', 'idx'):
+            env_idx, dbi_idx = open_subdb_env(db_dir, 'idx')
+            if not env_idx or dbi_idx is None:
+                clog('No index_db (idx) subdb found')
+                return 0
+            clog(f"{color_text('\n[detail:index_db (idx)]', CYAN)}")
+            cnt = 0
+            try:
+                with env_idx.begin(db=dbi_idx, write=False) as txn:
+                    with txn.cursor() as cur:
+                        for k, v in cur:
+                            ks = k.decode('utf-8', errors='replace')
+                            vs = v.decode('utf-8', errors='replace')
+                            preview = vs[:64] + '...' if len(vs) > 64 else vs
+                            clog(f"- {ks} -> {preview}")
+                            cnt += 1
+                            if cnt >= limit:
+                                break
+                    if cnt == 0:
+                        clog("index_db (idx) is empty.")
+            finally:
+                env_idx.close()
+            return 0
+
+        elif detail_choice in ('payout_guard', 'guard'):
+            env_g, dbi_g = open_subdb_env(db_dir, 'guard')
+            if not env_g or dbi_g is None:
+                clog('No payout_guard (guard) subdb found')
+                return 0
+            clog(f"{color_text('\n[detail:payout_guard]', CYAN)}")
+            cnt = 0
+            try:
+                with env_g.begin(db=dbi_g, write=False) as txn:
+                    with txn.cursor() as cur:
+                        for k, v in cur:
+                            ks = k.decode('utf-8', errors='replace')
+                            vs = v.decode('utf-8', errors='replace')
+                            clog(f"- {ks} -> {vs}")
+                            cnt += 1
+                            if cnt >= limit:
+                                break
+                    if cnt == 0:
+                        clog("payout_guard is empty.")
+            finally:
+                env_g.close()
+            return 0
+
+        elif detail_choice in ('web_cache', 'web_media', 'web_blocks'):
+            env_w, dbi_w = open_subdb_env(db_dir, detail_choice)
+            if not env_w or dbi_w is None:
+                clog(f'No {detail_choice} subdb found')
+                return 0
+            clog(f"{color_text(f'\n[detail:{detail_choice}]', CYAN)}")
+            cnt = 0
+            try:
+                with env_w.begin(db=dbi_w, write=False) as txn:
+                    with txn.cursor() as cur:
+                        for k, v in cur:
+                            ks = k.decode('utf-8', errors='replace')
+                            vs = v.decode('utf-8', errors='replace')
+                            preview = vs[:64] + '...' if len(vs) > 64 else vs
+                            clog(f"- {ks} -> {preview}")
+                            cnt += 1
+                            if cnt >= limit:
+                                break
+                    if cnt == 0:
+                        clog(f"{detail_choice} is empty.")
+            finally:
+                env_w.close()
+            return 0
+
+        elif detail_choice in ('node_secrets', 'secrets'):
+            env_s, dbi_s = open_subdb_env(db_dir, 'node_secrets')
+            if not env_s or dbi_s is None:
+                clog('No node_secrets subdb found')
+                return 0
+            clog(f"{color_text('\n[detail:node_secrets]', CYAN)}")
+            cnt = 0
+            try:
+                with env_s.begin(db=dbi_s, write=False) as txn:
+                    with txn.cursor() as cur:
+                        for k, v in cur:
+                            ks = k.decode('utf-8', errors='replace')
+                            clog(f"- secret: {ks} (len: {len(v)} bytes, [MASKED])")
+                            cnt += 1
+                            if cnt >= limit:
+                                break
+            finally:
+                env_s.close()
+            return 0
+
     # 5. Default summary mode
     clog(f"📁 DB: {db_dir}", GREEN)
     clog("\n---------------------", RED)
 
     envs = get_lmdb_envs(db_dir)
-    is_node = any(k in envs for k in ('chain', 'utxo', 'state', 'graffiti', 'mempool', 'chat_prekeys'))
+    base_name = os.path.basename(os.path.abspath(db_dir))
+    norm_path = db_dir.replace('\\', '/')
 
-    if is_node:
+    is_node = any(k in envs for k in ('chain', 'utxo', 'state', 'graffiti', 'mempool', 'chat_prekeys'))
+    is_archivist = ('index_db' in envs or 'payout_guard' in envs) or base_name == 'storage' or 'archivist' in norm_path
+    is_web = base_name == 'web' or 'data/web' in norm_path
+    is_keys = base_name == 'keys' or 'data/keys' in norm_path
+
+    if is_node and not (is_archivist or is_web or is_keys):
         n_chain = _count(db_dir, 'chain')
         clog(f"⛓️  {color_text('chain blocks : ', CYAN)}{n_chain}")
 
@@ -871,26 +1132,72 @@ def run_tool(args) -> int:
         n_prekeys = _count(db_dir, 'chat_prekeys')
         if n_prekeys > 0:
             clog(f"💬 {color_text('chat prekeys : ', CYAN)}{n_prekeys}")
-    else:
-        # Generic / other domain summary (keys, archivist, web)
-        for name in sorted(envs.keys()):
-            cnt = _count(db_dir, name)
-            clog(f"📦 {color_text(f'{name:<14} : ', CYAN)}{cnt}")
 
-    # Optional peeks
+    elif is_archivist:
+        clog("📚 ARCHIVIST STORAGE", YELLOW)
+        for env_name, env_p in sorted(envs.items()):
+            sub_info = get_env_subdbs_info(env_p)
+            for sname, scnt in sorted(sub_info.items()):
+                if scnt > 0 or sname in ('idx', 'guard'):
+                    clog(f"📦 {color_text(f'{env_name}/{sname:<10} : ', CYAN)}{scnt} entries")
+
+    elif is_web:
+        clog("🌐 WEB EXPLORER CACHE", YELLOW)
+        sub_info = get_env_subdbs_info(db_dir if is_lmdb_dir(db_dir) else os.path.join(db_dir, 'web'))
+        for sname, scnt in sorted(sub_info.items()):
+            clog(f"🌐 {color_text(f'{sname:<14} : ', CYAN)}{scnt} entries")
+
+    elif is_keys:
+        clog("🔑 KEYS & WALLET SECRETS", YELLOW)
+        sub_info = get_env_subdbs_info(db_dir if is_lmdb_dir(db_dir) else os.path.join(db_dir, 'keys'))
+        for sname, scnt in sorted(sub_info.items()):
+            clog(f"🔑 {color_text(f'{sname:<14} : ', CYAN)}{scnt} entries")
+
+    else:
+        for env_name, env_p in sorted(envs.items()):
+            sub_info = get_env_subdbs_info(env_p)
+            for sname, scnt in sorted(sub_info.items()):
+                label = f"{env_name}/{sname}" if sname != env_name else env_name
+                clog(f"📦 {color_text(f'{label:<16} : ', CYAN)}{scnt} entries")
+
+    # Optional peeks across all discovered environments
     if getattr(args, "peek", 0) > 0:
         clog(f"\n🔍 Peeking {args.peek} keys per database:")
-        for name in sorted(envs.keys()):
-            keys = _peek_keys(db_dir, name, args.peek)
-            if not keys:
-                continue
-            try:
-                show = [k.decode('utf-8', 'ignore') for k in keys]
-            except Exception:
-                show = [str(k) for k in keys]
-            clog(f"  {name}: {show}")
+        for env_name, env_path in sorted(envs.items()):
+            sub_keys = peek_env_keys(env_path, limit=args.peek)
+            for sname, keys in sorted(sub_keys.items()):
+                label = f"{env_name}/{sname}" if (sname != env_name and len(envs) > 1) else sname
+                try:
+                    show = [k if isinstance(k, str) else k.decode('utf-8', 'ignore') for k in keys]
+                except Exception:
+                    show = [str(k) for k in keys]
+                clog(f"  {label}: {show}")
 
     return 0
+
+
+def run_tool(args) -> int:
+    domain = getattr(args, "domain", None)
+
+    if domain == 'all':
+        clog("🚀 TSARCHAIN MONOREPO MULTI-DOMAIN DATABASE INSPECTOR", YELLOW)
+        clog("=" * 60)
+        overall_exit = 0
+        for dom_name in ['node', 'archivist', 'web', 'keys']:
+            dom_path = DOMAINS.get(dom_name)
+            if not os.path.exists(dom_path):
+                continue
+            clog(f"\n🏷️  DOMAIN: [{dom_name.upper()}] -> {dom_path}", CYAN)
+            rc = _run_single_target(dom_path, args)
+            if rc != 0:
+                overall_exit = rc
+        return overall_exit
+    elif domain in DOMAINS:
+        target_path = DOMAINS[domain]
+        return _run_single_target(target_path, args)
+    else:
+        db_dir = args.db_dir
+        return _run_single_target(db_dir, args)
 
 
 def main(argv=None) -> int:
@@ -912,13 +1219,13 @@ def cli_menu() -> None:
         clog("==============================================", color=CYAN)
         clog(f"Current DB dir: {db_dir}", color=BLUE)
         clog("----------------------------------------------", color=RED)
-        clog("1) Quick summary (height, state, utxo, mempool, prekeys)")
+        clog("1) Quick summary (auto-detect domain metrics)")
         clog("2) Size-only (breakdown & total)")
         clog("3) Health check (detailed)")
         clog("4) Peek keys")
-        clog("5) Detail dump (utxo, chain, mempool, state, graffiti, payout)")
+        clog("5) Detail dump (node, archivist, web, keys)")
         clog("6) Compact database")
-        clog("7) Change DB directory")
+        clog("7) Switch Domain / Directory")
         clog("0) Exit")
         clog("----------------------------------------------", color=RED)
 
@@ -929,9 +1236,25 @@ def cli_menu() -> None:
             return
 
         if choice == '7':
-            new_dir = input(f"New DB dir [{db_dir}]: ").strip()
-            if new_dir:
-                db_dir = new_dir
+            clog("\nSelect Domain / Target:")
+            clog("1) Node       (data/node)")
+            clog("2) Archivist  (data/archivist/storage)")
+            clog("3) Web        (data/web)")
+            clog("4) Keys       (data/keys)")
+            clog("5) Custom path")
+            dom_ch = input("Choice [1-5]: ").strip()
+            if dom_ch == '1':
+                db_dir = 'data/node'
+            elif dom_ch == '2':
+                db_dir = 'data/archivist/storage'
+            elif dom_ch == '3':
+                db_dir = 'data/web'
+            elif dom_ch == '4':
+                db_dir = 'data/keys'
+            elif dom_ch == '5':
+                new_dir = input(f"New DB dir [{db_dir}]: ").strip()
+                if new_dir:
+                    db_dir = new_dir
             continue
 
         argv = None
@@ -946,12 +1269,17 @@ def cli_menu() -> None:
             peek = input("Peek how many keys per DB? [3]: ").strip() or "3"
             argv = ['--db', db_dir, '--peek', peek]
         elif choice == '5':
-            clog("Available details: utxo, chain, mempool, state, graffiti, payout, chat_prekeys")
-            which = input("Which detail? [utxo]: ").strip().lower() or "utxo"
-            peek = input("How many items to show? [5]: ").strip() or "5"
-            argv = ['--db', db_dir, '--detail', which, '--peek', peek]
+            clog("\nAvailable details:")
+            clog("  Node      : utxo, chain, mempool, state, graffiti, payout, chat_prekeys")
+            clog("  Archivist : index_db (idx), payout_guard (guard)")
+            clog("  Web       : web_cache, web_media, web_blocks")
+            clog("  Keys      : node_secrets")
+            which = input("Which detail?: ").strip().lower()
+            if which:
+                peek = input("How many items to show? [5]: ").strip() or "5"
+                argv = ['--db', db_dir, '--detail', which, '--peek', peek]
         elif choice == '6':
-            clog("\nWARNING: Compaction will rewrite the DB directory.")
+            clog(f"\nWARNING: Compaction will rewrite the DB directory ({db_dir}).")
             yn = input("Proceed with backup before compaction? [Y/n]: ").strip().lower()
             if yn != 'n':
                 argv = ['--db', db_dir, '--compact']
