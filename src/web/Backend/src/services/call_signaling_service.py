@@ -173,7 +173,7 @@ class CallSignalingService:
             daemon=True,
         )
         self._watchdog_thread.start()
-        log.info("[call_signaling] Service initialized (node=%s:%s)", self.node_host, self.node_port)
+        log.debug("[call_signaling] Service initialized (node=%s:%s)", self.node_host, self.node_port)
 
     def shutdown(self) -> None:
         self._running = False
@@ -183,14 +183,14 @@ class CallSignalingService:
                 conn.close()
             self.connected_clients.clear()
             self.active_calls.clear()
-        log.info("[call_signaling] Service shut down successfully")
+        log.debug("[call_signaling] Service shut down successfully")
 
     def handle_connection(self, sock: Any, client_ip: str) -> None:
         """Entry point for an upgraded WebSocket client socket."""
         conn = WebSocketConnection(sock, client_ip)
         # 1. Send authentication challenge
         conn.send_json({"type": "AUTH_CHALLENGE", "nonce": conn.nonce})
-        log.info("[call_signaling] New connection from %s; sent AUTH_CHALLENGE", client_ip)
+        log.debug("[call_signaling] New connection from %s; sent AUTH_CHALLENGE", client_ip)
 
         try:
             while self._running and not conn.closed:
@@ -241,7 +241,7 @@ class CallSignalingService:
             self._handle_call_ringing(sender, msg)
         elif msg_type == "CALL_ANSWER":
             self._handle_call_answer(sender, msg)
-        elif msg_type == "CALL_ICE_CANDIDATE":
+        elif msg_type in ("CALL_ICE_CANDIDATE", "ICE_CANDIDATE"):
             self._handle_ice_candidate(sender, msg)
         elif msg_type in ("CALL_HANGUP", "CALL_REJECT"):
             self._handle_call_hangup(sender, msg, reason=msg.get("reason", "user_hangup"))
@@ -299,7 +299,7 @@ class CallSignalingService:
             self.connected_clients[addr] = conn
 
         conn.send_json({"type": "AUTH_OK", "address": addr})
-        log.info("[call_signaling] Client authenticated: addr=%s (ip=%s)", addr, conn.client_ip)
+        log.debug("[call_signaling] Client authenticated: addr=%s (ip=%s)", addr, conn.client_ip)
 
     def _handle_call_offer(self, conn: WebSocketConnection, sender: str, msg: dict) -> None:
         target = (msg.get("to") or "").strip().lower()
@@ -341,7 +341,7 @@ class CallSignalingService:
                 return
 
             if self._is_party_in_call(target):
-                log.info("[call_signaling] Call busy: target %s is in another call", target)
+                log.debug("[call_signaling] Call busy: target %s is in another call", target)
                 conn.send_json({"type": "CALL_BUSY", "call_id": call_id, "reason": "user_busy"})
                 return
 
@@ -356,7 +356,13 @@ class CallSignalingService:
             "sdp": sdp,
             "ts": int(time.time()),
         })
-        log.info("[call_signaling] Call offer forwarded: call_id=%s from=%s to=%s (type=%s)", call_id, sender, target, media_type)
+        sdp_content = sdp.get("sdp", "") if type(sdp) is dict else str(sdp or "")
+        has_audio = ("m=audio " in sdp_content and "m=audio 0" not in sdp_content)
+        has_video = ("m=video " in sdp_content and "m=video 0" not in sdp_content)
+        log.debug(
+            "[call_signaling] Call offer forwarded: call_id=%s from=%s to=%s (type=%s, audio_in_sdp=%s, video_in_sdp=%s)",
+            call_id, sender, target, media_type, has_audio, has_video
+        )
 
     def _handle_call_ringing(self, sender: str, msg: dict) -> None:
         call_id = (msg.get("call_id") or "").strip()
@@ -389,28 +395,70 @@ class CallSignalingService:
                 "call_id": call_id,
                 "sdp": sdp,
             })
-            log.info("[call_signaling] Call answered and connected: call_id=%s (caller=%s, callee=%s)", call_id, session.caller, sender)
+            sdp_content = sdp.get("sdp", "") if type(sdp) is dict else str(sdp or "")
+            has_audio = ("m=audio " in sdp_content and "m=audio 0" not in sdp_content)
+            has_video = ("m=video " in sdp_content and "m=video 0" not in sdp_content)
+            log.debug(
+                "[call_signaling] Call answered and connected: call_id=%s (caller=%s, callee=%s, audio_in_sdp=%s, video_in_sdp=%s)",
+                call_id, session.caller, sender, has_audio, has_video
+            )
 
     def _handle_ice_candidate(self, sender: str, msg: dict) -> None:
         call_id = (msg.get("call_id") or "").strip()
         candidate = msg.get("candidate")
         if not call_id or not candidate:
+            log.warning("[call_signaling] Ignored malformed/empty ICE candidate from %s (call_id=%s)", sender, call_id)
             return
 
         target_conn = None
+        peer_addr = None
         with self._lock:
             session = self.active_calls.get(call_id)
             if not session:
+                log.warning("[call_signaling] Dropped ICE candidate for inactive call_id=%s from %s", call_id, sender)
                 return
             peer_addr = session.callee if session.caller == sender else session.caller
             target_conn = self.connected_clients.get(peer_addr)
 
-        if target_conn and not target_conn.closed:
-            target_conn.send_json({
-                "type": "CALL_ICE_CANDIDATE",
-                "call_id": call_id,
-                "candidate": candidate,
-            })
+        if not target_conn or target_conn.closed:
+            log.warning("[call_signaling] Cannot forward ICE candidate: peer %s offline (call_id=%s)", peer_addr, call_id)
+            return
+
+        out_msg: Dict[str, Any] = {
+            "type": "CALL_ICE_CANDIDATE",
+            "call_id": call_id,
+            "candidate": candidate,
+        }
+        # Forward sdpMid and sdpMLineIndex whether they are top-level in msg or inside candidate dict
+        sdp_mid = msg.get("sdpMid")
+        sdp_mline_index = msg.get("sdpMLineIndex")
+        if type(candidate) is dict:
+            if sdp_mid is None:
+                sdp_mid = candidate.get("sdpMid")
+            if sdp_mline_index is None:
+                sdp_mline_index = candidate.get("sdpMLineIndex")
+
+        if sdp_mid is not None:
+            out_msg["sdpMid"] = sdp_mid
+        if sdp_mline_index is not None:
+            out_msg["sdpMLineIndex"] = sdp_mline_index
+
+        target_conn.send_json(out_msg)
+
+        if type(candidate) is str:
+            cand_str = candidate
+        elif type(candidate) is dict:
+            cand_str = str(candidate.get("candidate", ""))
+        else:
+            cand_str = str(candidate or "")
+
+        cand_type = "unknown"
+        if " typ " in cand_str:
+            cand_type = cand_str.split(" typ ")[1].split()[0]
+        log.debug(
+            "[call_signaling] ICE candidate forwarded: call_id=%s from=%s to=%s (type=%s, mid=%s, mline=%s)",
+            call_id, sender, peer_addr, cand_type, sdp_mid, sdp_mline_index
+        )
 
     def _handle_call_hangup(self, sender: str, msg: dict, reason: str) -> None:
         call_id = (msg.get("call_id") or "").strip()
@@ -435,7 +483,7 @@ class CallSignalingService:
             })
 
         if session:
-            log.info("[call_signaling] Call terminated: call_id=%s reason=%s duration=%.1fs", call_id, reason, duration)
+            log.debug("[call_signaling] Call terminated: call_id=%s reason=%s duration=%.1fs", call_id, reason, duration)
 
     # ---------------- Helpers & Watchdog ----------------
 
@@ -461,10 +509,10 @@ class CallSignalingService:
                     "call_id": sess.call_id,
                     "reason": "peer_disconnected",
                 })
-            log.info("[call_signaling] Terminated call %s due to peer disconnect (%s)", sess.call_id, addr)
+            log.debug("[call_signaling] Terminated call %s due to peer disconnect (%s)", sess.call_id, addr)
 
         if addr:
-            log.info("[call_signaling] Client session cleaned up: addr=%s (ip=%s)", addr, conn.client_ip)
+            log.debug("[call_signaling] Client session cleaned up: addr=%s (ip=%s)", addr, conn.client_ip)
         conn.close()
 
     def _timeout_watchdog_loop(self) -> None:
