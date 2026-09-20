@@ -9,8 +9,11 @@ from unittest.mock import MagicMock, patch
 
 from web.Backend.src.core.build_receipt import PaymentReceiptGenerator
 
-# --- Mocking Native Extension ---
-mock_tsarcore = MagicMock()
+try:
+    import tsarcore_native as _real_tsarcore
+    mock_tsarcore = MagicMock(wraps=_real_tsarcore)
+except Exception:
+    mock_tsarcore = MagicMock()
 mock_tsarcore.generate_qr_code.return_value = b"mocked_qr"
 mock_tsarcore.format_tsar_amount.return_value = "1,000 TSAR"
 mock_tsarcore.split_amount_parts.return_value = ("1", "000", " TSAR")
