@@ -58,6 +58,12 @@ realm=${PUBLIC_IP}
 # Mobile App Credentials
 user=${TURN_USER}:${TURN_PASS}
 
+# Security & Quota Rate Limiting
+user-quota=10
+total-quota=100
+max-bps=196608
+no-multicast-peers
+
 # Security and Optimization
 no-cli
 no-tls
