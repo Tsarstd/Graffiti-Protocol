@@ -11,7 +11,7 @@ import secrets
 import struct
 import threading
 import time
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 from bech32 import bech32_decode, convertbits
 from tsarchain.utils import config as CFG
@@ -163,6 +163,8 @@ class CallSignalingService:
         self.node_port: int = int(node_port)
         self.connected_clients: Dict[str, WebSocketConnection] = {}
         self.active_calls: Dict[str, CallSession] = {}
+        self._call_attempts_by_addr: Dict[str, List[float]] = {}
+        self._call_attempts_by_ip: Dict[str, List[float]] = {}
         self._lock = threading.Lock()
         self._running: bool = True
 
@@ -317,6 +319,28 @@ class CallSignalingService:
             conn.send_json({"type": "CALL_REJECTED", "call_id": call_id, "reason": "cannot_call_self"})
             return
 
+        # Rate Limiting Guard: max 5 calls / 60s per caller address, max 10 / 60s per client IP
+        now = time.time()
+        with self._lock:
+            self._prune_rate_limits(now)
+            addr_attempts = self._call_attempts_by_addr.get(sender, [])
+            ip_attempts = self._call_attempts_by_ip.get(conn.client_ip, [])
+
+            if len(addr_attempts) >= 5 or len(ip_attempts) >= 10:
+                log.warning("[call_signaling] Rate limit exceeded for caller=%s (ip=%s)", sender, conn.client_ip)
+                conn.send_json({
+                    "type": "CALL_REJECTED",
+                    "call_id": call_id,
+                    "reason": "rate_limited",
+                    "message": "Too many call attempts. Please wait a moment.",
+                })
+                return
+
+            addr_attempts.append(now)
+            ip_attempts.append(now)
+            self._call_attempts_by_addr[sender] = addr_attempts
+            self._call_attempts_by_ip[conn.client_ip] = ip_attempts
+
         # Dual-Guard Check: Check if target has DEACTIVATED chat on Node RPC
         if not self._check_node_chat_status(target):
             log.warning("[call_signaling] Call rejected: target %s has DEACTIVATED chat/calls (caller=%s)", target, sender)
@@ -324,7 +348,7 @@ class CallSignalingService:
                 "type": "CALL_REJECTED",
                 "call_id": call_id,
                 "reason": "recipient_deactivated",
-                "message": "Kontak ini menonaktifkan fitur panggilan.",
+                "message": "The contact has disabled calling features.",
             })
             return
 
@@ -515,8 +539,25 @@ class CallSignalingService:
             log.debug("[call_signaling] Client session cleaned up: addr=%s (ip=%s)", addr, conn.client_ip)
         conn.close()
 
+    def _prune_rate_limits(self, now: float) -> None:
+        """Prunes call rate limit sliding windows older than 60 seconds."""
+        cutoff = now - 60.0
+        for k in (self._call_attempts_by_addr.keys()):
+            v = [t for t in self._call_attempts_by_addr[k] if t > cutoff]
+            if v:
+                self._call_attempts_by_addr[k] = v
+            else:
+                self._call_attempts_by_addr.pop(k, None)
+        for k in (self._call_attempts_by_ip.keys()):
+            v = [t for t in self._call_attempts_by_ip[k] if t > cutoff]
+            if v:
+                self._call_attempts_by_ip[k] = v
+            else:
+                self._call_attempts_by_ip.pop(k, None)
+
     def _timeout_watchdog_loop(self) -> None:
-        """Periodically checks and auto-cancels unresponded calls exceeding timeout."""
+        """Periodically checks timeouts, prunes rate limits, and sends heartbeat PINGs."""
+        last_heartbeat = time.time()
         while self._running:
             time.sleep(5.0)
             now = time.time()
@@ -526,6 +567,7 @@ class CallSignalingService:
                     if sess.state in ("offering", "ringing") and (now - sess.created_at) > CALL_OFFER_TIMEOUT_S
                 ]
                 timed_out = [self.active_calls.pop(cid) for cid in timed_out_ids]
+                self._prune_rate_limits(now)
 
             for sess in timed_out:
                 log.warning("[call_signaling] Call timeout: call_id=%s not answered after %ds", sess.call_id, int(CALL_OFFER_TIMEOUT_S))
@@ -537,6 +579,25 @@ class CallSignalingService:
                     caller_conn.send_json({"type": "CALL_TIMEOUT", "call_id": sess.call_id, "reason": "timeout"})
                 if callee_conn and not callee_conn.closed:
                     callee_conn.send_json({"type": "CALL_TIMEOUT", "call_id": sess.call_id, "reason": "timeout"})
+
+            # Active Heartbeat PING every 25 seconds
+            if now - last_heartbeat >= 25.0:
+                last_heartbeat = now
+                with self._lock:
+                    active_conns = list(self.connected_clients.values())
+
+                stale_conns: list[WebSocketConnection] = []
+                for client in active_conns:
+                    if client.closed:
+                        stale_conns.append(client)
+                        continue
+                    # Send WebSocket PING frame
+                    ok = client.send_raw_frame(_OPCODE_PING, b"call_ping")
+                    if not ok:
+                        stale_conns.append(client)
+
+                for dead in stale_conns:
+                    self._cleanup_client(dead)
 
     def _is_party_in_call(self, addr: str) -> bool:
         for sess in self.active_calls.values():
