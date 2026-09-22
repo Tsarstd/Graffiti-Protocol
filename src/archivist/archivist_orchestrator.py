@@ -60,10 +60,7 @@ class ArchivistOrchestrator:
         self._load_auto_payout_guard()
 
     def attempt_reconnect(self) -> bool:
-        try:
-            target = self._target_node
-        except AttributeError:
-            target = None
+        target = self._target_node
         storage_port = self.storage_port
         if not target or storage_port is None:
             return False
@@ -226,7 +223,7 @@ class ArchivistOrchestrator:
 
 
     def _render_index(self, idx: Dict[str, Any]) -> None:
-        files = idx.get("files") or {}
+        files = idx.get("files", {})
         art_map_idx = idx.get("art_map")
         self._mark_pending_payouts(idx)
         self._refresh_pool_listing(files, art_map_idx)
@@ -253,10 +250,10 @@ class ArchivistOrchestrator:
         items = (files or {}).items()
 
         for gid, meta in items:
-            sha = str(meta.get("sha256") or "").lower()
+            sha = str(meta.get("sha256", "")).lower()
             if sha:
                 files_by_sha[sha] = {"id": gid, "meta": meta}
-            art_id = str(meta.get("art_id") or "").lower()
+            art_id = str(meta.get("art_id", "")).lower()
             if art_id:
                 files_by_art[art_id] = {"id": gid, "meta": meta}
                 
@@ -276,12 +273,12 @@ class ArchivistOrchestrator:
         self.pool_data = {}
         for art in posts:
             aid = art.get("art_id")
-            sha = str(art.get("sha256") or "").lower()
+            sha = str(art.get("sha256", "")).lower()
             file_meta = files_by_art.get(str(aid).lower()) or files_by_sha.get(sha)
             if not (aid and file_meta):
                 continue
             
-            stats = art.get("stats") or {}
+            stats = art.get("stats", {})
             self.pool_data[aid] = {"post": art, "stats": stats, "file": file_meta["meta"]}
 
     def _auto_mark_paid(self, posts: list[dict], files_by_art: dict[str, dict], files_by_sha: dict[str, dict] = None) -> None:
@@ -291,8 +288,8 @@ class ArchivistOrchestrator:
         files_by_art = files_by_art or {}
         marked = False
         for art in posts:
-            aid = str(art.get("art_id") or "").lower()
-            sha = str(art.get("sha256") or "").lower()
+            aid = str(art.get("art_id", "")).lower()
+            sha = str(art.get("sha256", "")).lower()
             if not aid and not sha:
                 continue
             file_entry = files_by_art.get(aid) if aid else None
@@ -300,14 +297,14 @@ class ArchivistOrchestrator:
                 file_entry = files_by_sha.get(sha)
             if not file_entry:
                 continue
-            meta = file_entry.get("meta") or {}
-            if meta.get("paid"):
+            meta = file_entry.get("meta", {})
+            if meta.get("paid") and meta.get("art_id"):
                 continue
-            bh = int(art.get("block_height", 0) or 0)
+            bh = int(art.get("block_height", 0))
             if bh <= 0:
                 continue
-            gid = file_entry.get("id") or sha or aid
-            txid = (art.get("txid") or "").strip()
+            gid = file_entry["id"]
+            txid = str(art.get("txid", "")).strip()
             resp = self._server.mark_paid(graffiti_id=gid, art_id=aid, txid=txid, block_height=bh)
             if resp.get("status") in ("ok", None):
                 marked = True
@@ -338,7 +335,7 @@ class ArchivistOrchestrator:
     def _auto_payout(self) -> None:
         if not self.connected or not self.pool_data:
             return
-        tip_height = int((self.last_info or {}).get("height") or 0)
+        tip_height = int((self.last_info or {}).get("height", 0))
         tip_epoch = GRAFFITI.compute_proof_epoch(tip_height)
         cooldown = int(CFG.ARCHIVIST_AUTO_PAYOUT_COOLDOWN_SEC)
         rpc_addr = self.rpc.address
@@ -350,14 +347,14 @@ class ArchivistOrchestrator:
                 self._process_auto_payout_for_art(art_id, entry, tip_epoch, cooldown, recipient)
 
     def _process_auto_payout_for_art(self, art_id: str, entry: dict, tip_epoch: int, cooldown: int, recipient: str) -> None:
-        stats = entry.get("stats") or {}
+        stats = entry.get("stats", {})
         last_paid_epoch = int(stats.get("last_paid_epoch", -1))
         pool_balance = int(stats.get("pool_balance", 0))
         if pool_balance <= 0:
             return
             
-        file_meta = entry.get("file") or {}
-        if not file_meta.get("paid") or str(file_meta.get("state") or "") != "stored":
+        file_meta = entry.get("file", {})
+        if not file_meta.get("paid") or str(file_meta.get("state", "")) != "stored":
             return
             
         last_proof_epoch = int(file_meta.get("last_proof_epoch", -1))
@@ -368,7 +365,7 @@ class ArchivistOrchestrator:
         guard_entry = self._auto_payout_guard.get(art_id, {})
         guard_epoch = int(guard_entry.get("epoch", -1))
         guard_ts = int(guard_entry.get("ts", 0))
-        guard_status = str(guard_entry.get("status") or "").lower()
+        guard_status = str(guard_entry.get("status", "")).lower()
         
         if guard_epoch > last_proof_epoch:
             return
@@ -402,7 +399,7 @@ class ArchivistOrchestrator:
         }
         self._save_auto_payout_guard()
         if ok:
-            txid = (resp.get("tx") or {}).get("txid") or "?"
+            txid = resp.get("tx", {}).get("txid", "?")
             self._log(f"[auto-payout] broadcast tx {txid[:64]}... for {art_id[:64]}...")
             threading.Thread(target=self.refresh_once, name="ArchivistRefreshAutoPayout", daemon=True).start()
         else:
@@ -415,7 +412,7 @@ class ArchivistOrchestrator:
                 self._stop.wait(CFG.RETENTION_GC_SEC)
                 continue
             
-            tip = int((self.last_info or {}).get("height") or 0)
+            tip = int((self.last_info or {}).get("height", 0))
             try:
                 gc_resp = self._server.run_gc(tip_height=tip) if self._server else None
                 idx = self._server.get_index_stats() if self._server else None
@@ -433,7 +430,7 @@ class ArchivistOrchestrator:
             self._stop.wait(CFG.RETENTION_GC_SEC)
 
     def _run_retention_proofs(self, idx: Dict[str, Any], tip_height: int) -> None:
-        files = idx.get("files") or {}
+        files = idx.get("files", {})
         if not files:
             return
         epoch_target = GRAFFITI.compute_proof_epoch(tip_height)
@@ -449,7 +446,7 @@ class ArchivistOrchestrator:
         last_epoch = int(meta.get("last_proof_epoch", -1))
         if last_epoch >= epoch_target:
             return
-        art_id = str(meta.get("art_id") or "").strip().lower()
+        art_id = str(meta.get("art_id", "")).strip().lower()
         if not art_id:
             self._log(f"[proof] skip {gid[:10]} (missing art_id)")
             return
@@ -466,8 +463,8 @@ class ArchivistOrchestrator:
         proof_epoch = int(resp.get("epoch", epoch_target))
         offset = int(resp.get("offset", 0))
         length = int(resp.get("length", 0))
-        phash = str(resp.get("hash") or "")
-        seed = str(resp.get("seed") or "")
+        phash = str(resp.get("hash", ""))
+        seed = str(resp.get("seed", ""))
         chunk = resp.get("chunk")
         mpath = resp.get("path")
         self._log(f"[proof] {gid[:10]} epoch {proof_epoch} offset {offset} len {length}")
@@ -495,7 +492,7 @@ class ArchivistOrchestrator:
             reason = str((ack or {}).get("error") or "submit_failed")
             self._log(f"[proof] submit failed: {ack}")
             if self._server:
-                files = self._server.index.get("files") or {}
+                files = self._server.index.get("files", {})
                 if gid in files:
                     fmeta = files[gid]
                     fmeta["last_proof_epoch"] = last_epoch
@@ -531,7 +528,7 @@ class ArchivistOrchestrator:
             self._log("Reconnection failed. Use 'reconnect' command.")
 
     def _mark_pending_payouts(self, idx: Dict[str, Any]) -> None:
-        files = idx.get("files") or {}
+        files = idx.get("files", {})
         current: set[str] = set()
         items = files.items()
         for aid, meta in items:

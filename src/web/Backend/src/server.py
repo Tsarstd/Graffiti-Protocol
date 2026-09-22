@@ -6,6 +6,7 @@ import os
 import sys
 import json
 import base64
+import hashlib
 import re
 import subprocess
 import urllib.parse
@@ -14,12 +15,18 @@ import threading
 from http.server import BaseHTTPRequestHandler
 from typing import Dict, Any, Optional
 
+if sys.platform == "win32":
+    _winget_links = os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Links")
+    if os.path.isdir(_winget_links) and _winget_links not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = _winget_links + os.pathsep + os.environ.get("PATH", "")
+
 from PIL import Image as PILImage
 
 from tsarchain.utils import config as CFG
 from tsarchain.utils.benchmarks import benchmark
 from web.Backend.src.utils.rate_limit import RateLimiter
 from web.Backend.src.routes.health import handle_health
+from web.Backend.src.services.call_signaling_service import CallSignalingService, WS_RFC6455_GUID
 from web.Backend.src.routes.explorer_routes import (
     ExplorerRoutes,
     CACHE_DIR,
@@ -126,7 +133,13 @@ def generate_video_thumbnail_webp(video_path: str, output_path: str) -> bool:
             return False
 
 
-def create_handler_class(routes: Optional[ExplorerRoutes] = None):
+def create_handler_class(
+    routes: Optional[ExplorerRoutes] = None,
+    signaling: Optional[CallSignalingService] = None,
+):
+    if signaling is None and routes is not None:
+        signaling = CallSignalingService(node_host=routes.node_host, node_port=routes.node_port)
+
     class ExplorerHTTPRequestHandler(BaseHTTPRequestHandler):
         # Suppress default server version header
         server_version = "TsarWeb/1.0"
@@ -162,6 +175,13 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
 
         def do_GET(self) -> None:
             try:
+                parsed = urllib.parse.urlsplit(self.path)
+                path = parsed.path.rstrip("/")
+                if path == "/api/call/ws":
+                    upgrade = (self.headers.get("Upgrade") or "").strip().lower()
+                    if upgrade == "websocket":
+                        self._upgrade_to_websocket()
+                        return
                 self._handle_get(is_head=False)
             except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
                 pass
@@ -169,6 +189,25 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
                 log.exception("[unhandled_server_error] : %s", exc)
                 with contextlib.suppress(Exception):
                     self._send_json(500, {"error": "internal_error", "detail": str(exc)})
+
+
+        def _upgrade_to_websocket(self) -> None:
+            ws_key = (self.headers.get("Sec-WebSocket-Key") or "").strip()
+            if not ws_key:
+                self.send_response(400)
+                self.end_headers()
+                return
+            accept_raw = hashlib.sha1((ws_key + WS_RFC6455_GUID).encode("ascii")).digest()
+            accept_val = base64.b64encode(accept_raw).decode("ascii")
+            self.send_response(101, "Switching Protocols")
+            self.send_header("Upgrade", "websocket")
+            self.send_header("Connection", "Upgrade")
+            self.send_header("Sec-WebSocket-Accept", accept_val)
+            self.end_headers()
+
+            client_ip = self._get_client_ip()
+            if signaling:
+                signaling.handle_connection(self.connection, client_ip)
 
 
         def do_POST(self) -> None:
@@ -378,7 +417,7 @@ def create_handler_class(routes: Optional[ExplorerRoutes] = None):
                 return
 
             try:
-                total_size = int(meta.get("size_bytes") or meta.get("size") or meta_resp.get("size_bytes") or 0)
+                total_size = int(meta.get("size_bytes") or meta.get("size", 0))
             except (ValueError, TypeError):
                 total_size = 0
 

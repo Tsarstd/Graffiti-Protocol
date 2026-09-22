@@ -166,3 +166,24 @@ def test_handle_conn_success(mock_verify, mock_send, mock_recv, server):
         server._handle_conn(conn, ("8.8.8.8", 1234))
     args, kwargs = mock_send.call_args
     assert b"pong_env" in args[1]
+
+
+def test_reconcile_blobs_on_disk(tmp_path, mock_db):
+    stor_dir = tmp_path / "stor_reconcile"
+    blobs_dir = stor_dir / "blobs"
+    blobs_dir.mkdir(parents=True, exist_ok=True)
+
+    dummy_sha = "a" * 64
+    blob_file = blobs_dir / f"{dummy_sha}_123456.bin"
+    blob_file.write_bytes(b"dummy_graffiti_payload_data")
+
+    with patch("threading.Thread"):
+        srv = StorageServer("127.0.0.1", 12346, str(stor_dir))
+
+    gid = f"{dummy_sha}_123456"
+    assert gid in srv.index["files"]
+    meta = srv.index["files"][gid]
+    assert meta["sha256"] == dummy_sha
+    assert meta["size_bytes"] == len(b"dummy_graffiti_payload_data")
+    assert meta["state"] == "stored"
+    assert meta["paid"] is True

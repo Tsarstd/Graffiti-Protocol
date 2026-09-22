@@ -47,9 +47,9 @@ def _handle_stor_init(server, msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     fname = str(msg.get("filename", "")).strip() or "blob.bin"
     mime = str(msg.get("mime", "")).strip().lower()
     art_id = str(msg.get("art_id", "")).strip().lower()
-    mroot = msg.get("mroot") or msg.get("merkle_root")
-    mchunk = msg.get("mchunk") or msg.get("merkle_chunk")
-    mcount = msg.get("mcount") or msg.get("merkle_count")
+    mroot = msg.get("mroot")
+    mchunk = msg.get("mchunk")
+    mcount = msg.get("mcount")
     chunk = int(CFG.STORAGE_UPLOAD_CHUNK)
     if not aid or size <= 0 or len(sha) != 64:
         return {"type": "STOR_ACK", "status": "rejected", "reason": "bad_fields"}
@@ -86,7 +86,7 @@ def _handle_stor_init(server, msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return {"type": "STOR_ACK", "status": "rejected", "reason": err_reason}
     meta.update(parsed_merkle)
     
-    valid_mroot = str(meta.get("mroot") or mroot or "").strip().lower()
+    valid_mroot = str(meta.get("mroot", "")).strip().lower()
     if _is_permanent_duplicate(server, art_id, sha, valid_mroot):
         log.warning("[STOR_INIT] Duplicate graffiti rejected via art_map: art_id=%s sha256=%s", art_id[:16], sha[:16])
         return {"type": "STOR_ACK", "status": "rejected", "reason": "duplicate_graffiti"}
@@ -117,7 +117,7 @@ def _handle_stor_put(server, msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return {"type": "STOR_ACK", "status": "rejected", "reason": "no_init"}
     
     chunk_bytes = base64.b64decode(b64)
-    max_chunk = int(meta.get("chunk_size") or CFG.STORAGE_UPLOAD_CHUNK)
+    max_chunk = int(meta.get("chunk_size", CFG.STORAGE_UPLOAD_CHUNK))
     if len(chunk_bytes) > max_chunk:
         return {"type": "STOR_ACK", "status": "rejected", "reason": "chunk_too_big"}
     try:
@@ -139,15 +139,14 @@ def _handle_stor_put(server, msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 @benchmark(label="STOR_COMMIT", threshold_ms=250.0)
 def _handle_stor_commit(server, msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     aid = str(msg.get("graffiti_id", "")).strip()
-    req_receipt = str(msg.get("receipt_id", "")).strip()
     meta = server.index.get("files", {}).get(aid)
     if not meta:
         return {"type": "STOR_ACK", "status": "rejected", "reason": "no_such"}
     c_art_id = str(meta.get("art_id") or "").strip().lower()
     c_sha = str(meta.get("sha256") or "").strip().lower()
-    c_mroot = str(meta.get("mroot") or meta.get("merkle_root") or "").strip().lower()
+    c_mroot = str(meta.get("mroot", "")).strip().lower()
     if _is_permanent_duplicate(server, c_art_id, c_sha, c_mroot):
-        existing_gid = (server.index.get("art_map") or {}).get(c_art_id)
+        existing_gid = server.index.get("art_map", {}).get(c_art_id)
         if existing_gid != aid:
             log.warning("[STOR_COMMIT] Duplicate graffiti rejected via art_map: art_id=%s sha256=%s", c_art_id[:16], c_sha[:16])
             return {"type": "STOR_ACK", "status": "rejected", "reason": "duplicate_graffiti"}
@@ -174,7 +173,7 @@ def _handle_stor_commit(server, msg: Dict[str, Any]) -> Optional[Dict[str, Any]]
         
         GRAFFITI.validate_graffiti_file(actual_size, meta.get("mime"), meta.get("filename"))
         now_ts = int(time.time())
-        receipt_id = meta.get("receipt_id") or req_receipt or f"rcpt_{aid}_{now_ts}"
+        receipt_id = f"rcpt_{aid}"
         receipt = {
             "id": receipt_id,
             "graffiti_id": aid,
@@ -200,14 +199,10 @@ def _handle_stor_commit(server, msg: Dict[str, Any]) -> Optional[Dict[str, Any]]
             }
         )
         # set payment deadline height for unpaid blobs when caller supplies current tip height
-        tip_h = int(msg.get("tip_height", 0) or msg.get("block_height", 0) or 0)
+        tip_h = int(msg.get("tip_height", 0))
         expire_after = max(0, int(CFG.GRAFFITI_EXPIRE_AFTER_BLOCKS))
         if (not meta.get("paid")) and expire_after > 0 and tip_h > 0:
-            try:
-                expire_h = int(meta.get("expire_at_height", 0) or 0)
-            except Exception:
-                log.exception("Failed to parse existing expire_at_height from metadata")
-                expire_h = 0
+            expire_h = int(meta.get("expire_at_height", 0))
             if expire_h <= 0:
                 meta["expire_at_height"] = tip_h + expire_after
         art_id = str(meta.get("art_id", "")).strip().lower()
@@ -231,11 +226,11 @@ def _handle_stor_get_by_art(server, msg: Dict[str, Any]) -> Optional[Dict[str, A
         return {"type": "STOR_GET_BY_ART", "found": False}
 
     if not gid and art_id:
-        gid = (server.index.get("art_map") or {}).get(art_id) or ""
+        gid = server.index.get("art_map", {}).get(art_id, "")
 
     meta = None
     if gid:
-        meta = (server.index.get("files") or {}).get(gid)
+        meta = server.index.get("files", {}).get(gid)
 
     found = bool(meta)
     resp = {"type": "STOR_GET_BY_ART", "found": found, "graffiti_id": gid, "meta": meta}
@@ -250,19 +245,19 @@ def _process_data_retrieval(server, msg: Dict[str, Any], art_id: str, gid: str, 
     msg_cap = int(CFG.GRAFFITI_MAX_MSG_BYTES)
     data_cap = int(msg_cap * 3 // 4)
     
-    max_bytes = int(msg.get("max_bytes", 0) or 0)
+    max_bytes = int(msg.get("max_bytes", 0))
     if max_bytes <= 0:
         max_bytes = int(CFG.GRAFFITI_MAX_SIZE_BYTES)
     max_bytes = max(32 * 1024, min(max_bytes, int(CFG.GRAFFITI_MAX_SIZE_BYTES), data_cap))
 
     chunk_mode = ("offset" in msg) or ("length" in msg)
-    offset = int(msg.get("offset", 0) or 0)
-    req_len = int(msg.get("length", 0) or 0)
+    offset = int(msg.get("offset", 0))
+    req_len = int(msg.get("length", 0))
 
     if offset < 0:
         offset = 0
 
-    total_size = int(meta.get("size_bytes", 0) or 0)
+    total_size = int(meta.get("size_bytes", 0))
 
     if (not chunk_mode) and total_size > 0 and total_size > max_bytes:
         resp["status"] = "error"
@@ -309,11 +304,11 @@ def _fetch_kv_data(server, gid: str, art_id: str, offset: int, read_len: int, to
 def _check_mempool_capacity(server) -> Optional[Dict[str, Any]]:
     if int(CFG.MAX_GRAFFITI_ON_MEMPOOL) > 0:
         active = 0
-        items = (server.index.get("files") or {}).values()
+        items = server.index.get("files", {}).values()
         for meta in items:
             if meta.get("paid"):
                 continue
-            state = str(meta.get("state") or "").lower()
+            state = str(meta.get("state", "")).lower()
             if state in ("receiving", "appending", "pending_confirm") or not meta.get("paid"):
                 active += 1
 
@@ -324,10 +319,10 @@ def _check_mempool_capacity(server) -> Optional[Dict[str, Any]]:
 def _is_permanent_duplicate(server, art_id: str, sha: str, mroot: str) -> bool:
     if not art_id or not sha or not mroot:
         return False
-    existing_gid = (server.index.get("art_map") or {}).get(art_id)
+    existing_gid = server.index.get("art_map", {}).get(art_id)
     if not existing_gid:
         return False
-    existing_meta = (server.index.get("files") or {}).get(existing_gid) or {}
+    existing_meta = server.index.get("files", {}).get(existing_gid, {})
     is_permanent = (
         existing_meta.get("state") == "stored"
         or bool(existing_meta.get("paid"))
@@ -335,8 +330,8 @@ def _is_permanent_duplicate(server, art_id: str, sha: str, mroot: str) -> bool:
     )
     if not is_permanent:
         return False
-    ex_sha = str(existing_meta.get("sha256") or "").strip().lower()
-    ex_mroot = str(existing_meta.get("merkle_root") or existing_meta.get("mroot") or "").strip().lower()
+    ex_sha = str(existing_meta.get("sha256", "")).strip().lower()
+    ex_mroot = str(existing_meta.get("mroot", "")).strip().lower()
     return bool(ex_sha and ex_mroot and ex_sha == sha.strip().lower() and ex_mroot == mroot.strip().lower())
 
 def _validate_merkle_meta(mroot, mchunk, mcount, size) -> tuple[bool, str, dict]:

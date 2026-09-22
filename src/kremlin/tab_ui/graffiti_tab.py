@@ -147,15 +147,12 @@ class GraffitiController:
 
     def process_upload_result(self, res: dict):
         self.uploading = False
-        try:
-            if res.get("status") != "ok":
-                return False, res
-        except AttributeError:
+        if type(res) is not dict or res.get("status") != "ok":
             return False, res
 
-        receipt = res.get("receipt") or {}
+        receipt = res.get("receipt", {})
         fallback_sha = (self.selected_sha or "")[:12]
-        rcpt_id = receipt.get("id") or receipt.get("receipt_id") or f"rcpt-{fallback_sha or int(time.time())}"
+        rcpt_id = receipt.get("id", f"rcpt_{fallback_sha}")
         self.receipt_id = rcpt_id
         return True, res
 

@@ -651,6 +651,65 @@ def test_validate_transactions_graffiti_payout_ok(validation_chain, mocker):
     result = chain._validate_transactions(block)
     assert result is True
 
+def test_validate_transactions_graffiti_payout_sync_mode_inline_proof_ok(validation_chain, mocker):
+    """PAYOUT with empty registry (regular sync from genesis) validates via inline proof metadata."""
+    chain = validation_chain
+
+    hash20 = b'\x00' * 20
+    spk_p2wpkh = b'\x00\x14' + hash20
+    data = [0] + list(convertbits(hash20, 8, 5, True))
+    address = bech32_encode(CFG.ADDRESS_PREFIX, data)
+
+    cb = create_coinbase_tx(50_000_000 + 10)
+    art_id = "abc123"
+    recipients = [{"addr": address, "amount": 10_000_000}]
+    meta = {
+        "event": "PAYOUT",
+        "art_id": art_id,
+        "epoch": 1,
+        "recipients": recipients,
+        "proof_epoch": 1,
+        "proof_storer": address,
+    }
+    opret_script = GRAFFITI.build_script(meta).serialize()
+    opret_out = DummyTxOut(0, opret_script)
+    pay_out = DummyTxOut(10_000_000, spk_p2wpkh)
+    tx_input = create_utxo_input(b'\xaa' * 32, 0)
+    tx = create_normal_tx([tx_input], [opret_out, pay_out], fee=10)
+
+    graffiti_data = GRAFFITI.encode_payload(meta)
+    chain._mock_H.last_pushdata.side_effect = lambda script: graffiti_data if (isinstance(script, bytes) and len(script) > 0 and script[0] == 0x6a) else None
+    chain._mock_graffiti.parse_payload.side_effect = lambda data: meta if data == graffiti_data else None
+
+    def parse_from_script_side_effect(script):
+        if script is not None:
+            ser = getattr(script, "serialize", None)
+            raw = ser() if callable(ser) else bytes(script)
+            data = chain._mock_H.last_pushdata(raw)
+            if data:
+                return chain._mock_graffiti.parse_payload(data)
+        return None
+    chain._mock_graffiti.parse_from_script.side_effect = parse_from_script_side_effect
+
+    mock_registry = mocker.Mock()
+    mock_registry.get_post.return_value = {
+        "stats": {
+            "pool_balance": 100_000_000,
+            "last_paid_epoch": 0,
+        },
+        "storer": address,
+    }
+    # Simulated sync mode: registry has no proofs yet
+    mock_registry.get_latest_proof_epoch.return_value = -1
+    mock_registry.get_proof.return_value = None
+    chain._mock_utxo._graffiti_registry = mock_registry
+
+    block = DummyBlock(height=18, transactions=[cb, tx])
+    chain._mock_H.native_validate_block_txs_compact.return_value = (True, None, [10])
+
+    result = chain._validate_transactions(block)
+    assert result is True
+
 def test_validate_transactions_graffiti_payout_bad_art_id(validation_chain, mocker):
     """PAYOUT with empty art_id -> error."""
     chain = validation_chain

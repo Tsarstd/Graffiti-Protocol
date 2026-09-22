@@ -66,15 +66,17 @@ def get_explorer_providers(rpc_client):
         if "txid" not in t:
             t["txid"] = t.get("id") or t.get("hash") or str(txid).lower()
         if "inputs" not in t and "vin" in t:
-            t["inputs"] = t.get("vin") or []
+            t["inputs"] = t.get("vin", [])
         if "outputs" not in t and "vout" in t:
-            t["outputs"] = t.get("vout") or []
+            t["outputs"] = t.get("vout", [])
 
         if "is_coinbase" not in t:
-            vin = t.get("inputs") or []
+            vin = t.get("inputs", [])
             if vin:
-                prev = (vin[0].get("txid") or vin[0].get("prev_txid") or "")
+                prev = vin[0].get("txid", "")
                 t["is_coinbase"] = (prev == "0"*64) or bool(vin[0].get("coinbase"))
+            else:
+                t["is_coinbase"] = False
         return t
 
 
@@ -91,48 +93,44 @@ def get_explorer_providers(rpc_client):
 
             if any(k in d for k in ("spendable","confirmed","pending","immature")):
                 return d
-            for key in ("balances","items","map"):
+            for key in ("balances", "items", "map"):
                 m = d.get(key)
-                if m:
-                    try:
-                        return m.get(addr) or next(iter(m.values()), {})
-                    except AttributeError:
-                        pass
+                if type(m) is dict:
+                    return m.get(addr) or next(iter(m.values()), {})
             bal_inner = d.get("balance")
-            if bal_inner:
-                bal_inner.keys()
+            if type(bal_inner) is dict:
                 return bal_inner
 
             return None
 
         be = _pick_entry(bals) or {}
 
-        res["spendable"] = int(be.get("spendable") or be.get("confirmed") or be.get("balance_spendable") or 0)
-        res["immature"]  = int(be.get("immature")  or be.get("balance_immature")  or 0)
-        res["pending"]   = int(be.get("pending")   or be.get("unconfirmed") or be.get("balance_pending") or 0)
+        res["spendable"] = int(be.get("spendable", 0))
+        res["immature"]  = int(be.get("immature", 0))
+        res["pending"]   = int(be.get("pending", 0))
 
 
         utxo_list = []
         if utx:
-            raw = utx.get("utxos") or utx.get("items") or []
+            raw = utx.get("utxos", {})
 
             for k, v in raw.items():
                 txid, idx = k.rsplit(":", 1); idx = int(idx)
                 utxo_list.append({
                     "txid": txid,
                     "index": idx,
-                    "amount": v.get("amount") or v.get("value") or 0,
-                    "height": v.get("block_height") or v.get("height"),
+                    "amount": v.get("amount", 0),
+                    "height": v.get("block_height"),
                     "confirmations": v.get("confirmations"),
                 })
 
         res["utxos"] = utxo_list
 
         if his:
-            res["history"] = his.get("history") or his.get("items") or []
+            res["history"] = his.get("history", [])
 
         if (res["spendable"] == 0 and res["pending"] == 0 and res["immature"] == 0) and res["utxos"]:
-            res["spendable"] = int(sum(int(u.get("amount") or 0) for u in res["utxos"]))
+            res["spendable"] = int(sum(int(u.get("amount", 0)) for u in res["utxos"]))
         return res
 
 
@@ -149,8 +147,8 @@ def get_explorer_providers(rpc_client):
 
 
     def _prov_fetch_graffiti_file(post: dict | None, art_id: str):
-        aid = art_id or (post or {}).get("art_id") or ""
-        storer_addr = (post or {}).get("storer") or (post or {}).get("storage")
+        aid = art_id or (post or {}).get("art_id", "")
+        storer_addr = (post or {}).get("storer")
         return fetch_graffiti_file(_rpc, aid, storer_addr=storer_addr)
 
 

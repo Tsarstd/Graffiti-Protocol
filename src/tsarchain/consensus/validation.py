@@ -255,15 +255,12 @@ class BlockValidator:
                     continue
 
                 if reg is not None:
-                    try:
-                        existing_post = reg.get_post(art_id)
-                    except (AttributeError, TypeError):
-                        existing_post = None
+                    existing_post = reg.get_post(art_id)
                     if type(existing_post) is dict:
-                        ex_sha = str(existing_post.get("sha256") or "").strip().lower()
-                        ex_mroot = str(existing_post.get("mroot") or existing_post.get("merkle_root") or "").strip().lower()
-                        cur_sha = str(meta.get("sha256") or "").strip().lower()
-                        cur_mroot = str(meta.get("mroot") or meta.get("merkle_root") or "").strip().lower()
+                        ex_sha = str(existing_post.get("sha256", "")).strip().lower()
+                        ex_mroot = str(existing_post.get("mroot", "")).strip().lower()
+                        cur_sha = str(meta.get("sha256", "")).strip().lower()
+                        cur_mroot = str(meta.get("mroot", "")).strip().lower()
                         if cur_sha and cur_mroot and ex_sha == cur_sha and ex_mroot == cur_mroot:
                             self.blockchain._last_block_validation_error = "graffiti_duplicate_post"
                             return False
@@ -335,12 +332,15 @@ class BlockValidator:
         if epoch >= 0 and not self._validate_payout_proof(meta, epoch, art_id, reg):
             return False
 
-        proof_entry = reg.get_proof(art_id, "", epoch) if reg else None
+        proof_storer = str(meta.get("proof_storer") or "").strip().lower()
+        proof_entry = reg.get_proof(art_id, proof_storer, epoch) if (reg and proof_storer) else None
         valid_storer = ""
         if type(proof_entry) is dict:
             storer_val = proof_entry.get("storer")
             if type(storer_val) is str:
                 valid_storer = storer_val.strip().lower()
+        if not valid_storer and proof_storer:
+            valid_storer = proof_storer
 
         recs = meta.get("recipients")
         if type(recs) is not list or not recs:
@@ -349,7 +349,7 @@ class BlockValidator:
             
         total_req = 0
         for rec in recs:
-            addr = str(rec.get("addr") or rec.get("address") or "").strip().lower()
+            addr = str(rec.get("addr", "")).strip().lower()
             amt_req = int(rec.get("amount", 0))
             if not addr or amt_req <= 0:
                 self.blockchain._last_block_validation_error = "payout_bad_recipient"
@@ -375,8 +375,14 @@ class BlockValidator:
             return False
         latest_epoch = reg.get_latest_proof_epoch(art_id)
         if latest_epoch is None or latest_epoch < epoch:
-            self.blockchain._last_block_validation_error = "payout_missing_proof"
-            return False
+            proof_epoch = int(meta.get("proof_epoch", -1))
+            if proof_epoch < 0:
+                proof_height = int(meta.get("proof_height", meta.get("height", -1)))
+                if proof_height >= 0:
+                    proof_epoch = GRAFFITI.compute_proof_epoch(proof_height)
+            if proof_epoch < epoch:
+                self.blockchain._last_block_validation_error = "payout_missing_proof"
+                return False
         return True
 
 

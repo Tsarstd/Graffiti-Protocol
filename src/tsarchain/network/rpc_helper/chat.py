@@ -138,16 +138,13 @@ class ChatHandler(NetworkHandlerProxy):
     def get_spend_pub(self, addr: str) -> str | None:
         if not addr:
             return None
-        try:
-            spend_dict = self.chat_spend_pub
-            if type(spend_dict) is dict:
-                sp = (spend_dict.get(addr) or "").strip().lower()
-                if sp:
-                    return sp
-        except AttributeError:
-            pass
+        spend_dict = self.chat_spend_pub
+        if type(spend_dict) is dict:
+            sp = str(spend_dict.get(addr, "")).strip().lower()
+            if sp:
+                return sp
         b = self.get_prekey_bundle(addr)
-        sp = (b.get("spend_pub") or "").strip().lower()
+        sp = str(b.get("spend_pub", "")).strip().lower()
         if sp:
             with self.chat_lock:
                 if type(self.chat_spend_pub) is dict:

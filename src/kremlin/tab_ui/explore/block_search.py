@@ -94,7 +94,7 @@ class BlockSearch:
         hh = _pick("hash")
         blkid = _pick("block_id")
         ts = self._fmt_ts(_pick("timestamp", "time"))
-        prev = _pick("prev_block_hash", "prev_hash", "previous_hash", "previousblockhash")
+        prev = _pick("prev_block_hash", "prev_hash")
         nn = _pick("nonce")
         dif = _pick("difficulty")
         size_b = _pick("size_bytes", "size")
@@ -103,7 +103,7 @@ class BlockSearch:
         bits = _pick("bits")
         ver = _pick("version")
         mroot = _pick("merkle_root")
-        txs = b.get("transactions") or b.get("tx") or []
+        txs = b.get("transactions") or b.get("tx", [])
 
         p._section(f"Block #{h}")
         if not blkid:
@@ -161,7 +161,9 @@ class BlockSearch:
                 for pay in payouts:
                     art_id = pay.get("art_id") or "-"
                     epoch = pay.get("epoch")    
-                    recipients = pay.get("recipients") or pay.get("addre") or []
+                    recipients = pay.get("recipients", [])
+                    if type(recipients) is dict:
+                        recipients = [{"addr": a, "amount": amt} for a, amt in recipients.items()]
                     p._kv("TxID", str(pay.get("txid") or "-"), mono=True, vtag="val_hex")
                     p._kv("Art ID", str(art_id or "-"), mono=True, vtag="val_hex")
                     p._kv("Epoch", str(epoch or "-"), mono=True, vtag="val_num")
@@ -170,7 +172,7 @@ class BlockSearch:
                         p._writeln("  -", "mono", "muted")
                     else:
                         for rec in recipients:
-                            addr = (rec.get("addr") or rec.get("address") or "").strip()
+                            addr = str(rec.get("addr", "")).strip()
                             amt = rec.get("amount")
                             addr_tags = ("mono", "val_addr") if addr else ("mono", "muted")
                             p.text.insert("end", "  - ", ("mono",))
@@ -185,9 +187,9 @@ class BlockSearch:
             p._writeln("No transactions.", "muted")
         else:
             for t in txs:
-                txid = t.get("txid") or t.get("id") or t.get("hash") or "-"
-                vin = len((t.get("inputs") or t.get("vin") or []) or [])
-                vout = len((t.get("outputs") or t.get("vout") or []) or [])
+                txid = t.get("txid", "-")
+                vin = len(t.get("inputs") or t.get("vin", []))
+                vout = len(t.get("outputs") or t.get("vout", []))
 
                 p.text.insert("end", "- ", ("mono",))
                 p.text.insert("end", txid, ("mono", "val_hex"))

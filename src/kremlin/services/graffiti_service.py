@@ -124,11 +124,11 @@ def _send_storage_request(
 
 def fetch_storers(rpc_call: Callable[[Dict[str, Any]], Optional[Dict[str, Any]]], limit: Optional[int] = None) -> list[Dict[str, Any]]:
     resp = rpc_call({"type": "STOR_LIST"}) or {}
-    storers = resp.get("storers") or resp.get("items") or []
+    storers = resp.get("storers", [])
     valid: list[Dict[str, Any]] = []
     for meta in storers:
-        port = int(meta.get("port") or 0)
-        addr = str(meta.get("addr") or meta.get("address") or "").strip().lower()
+        port = int(meta.get("port", 0))
+        addr = str(meta.get("addr", "")).strip().lower()
         if not addr or port <= 0:
             continue
         valid.append(meta)
@@ -238,14 +238,14 @@ def select_upload_storers(resp: Optional[Dict[str, Any]], *, replication_r: Opti
     """
     Select candidate storage nodes based on metadata and sort by most trusted/recently seen.
     """
-    storers = (resp or {}).get("storers") or (resp or {}).get("items") or []
+    storers = (resp or {}).get("storers", [])
     usable: list[Dict[str, Any]] = []
     for meta in storers:
-        port = int(meta.get("port") or 0)
+        port = int(meta.get("port", 0))
         if port <= 0:
             continue
         usable.append(meta)
-    usable.sort(key=lambda m: int(m.get("trusted") or 0) * 1_000_000 + int(m.get("last_seen", 0)), reverse=True)
+    usable.sort(key=lambda m: int(m.get("trusted", 0)) * 1_000_000 + int(m.get("last_seen", 0)), reverse=True)
     limit = max(1, int(replication_r if replication_r is not None else CFG.GRAFFITI_REPLICATION_R))
     return usable[:limit]
 
@@ -308,7 +308,7 @@ def build_post_plan(
     creator = (creator_addr or "").strip().lower()
     if not creator:
         raise ValueError("creator wallet belum dipilih")
-    storer_addr = str(storer_meta.get("addr") or storer_meta.get("address") or "").strip().lower()
+    storer_addr = str(storer_meta.get("addr", "")).strip().lower()
     art = art_id or compute_art_id(sha256_hex, creator)
     meta = build_metadata(
         sha256_hex=sha256_hex,
@@ -499,7 +499,7 @@ def upload_graffiti(
         return {"status": "error", "stage": "commit", "resp": commit_resp}
 
     receipt = commit_resp.get("receipt") or {"graffiti_id": gid, "sha256": sha_hex, "size_bytes": total_size}
-    receipt.setdefault("id", receipt.get("receipt_id") or f"rcpt_{gid}_{int(time.time())}")
+    receipt.setdefault("id", f"rcpt_{gid}")
     return {
         "status": "ok",
         "graffiti_id": gid,
@@ -541,7 +541,7 @@ def fetch_graffiti_file(
     preferred, others = [], []
     storer_target = (storer_addr or "").strip().lower()
     for meta in storers:
-        addr = str(meta.get("addr") or meta.get("address") or "").strip().lower()
+        addr = str(meta.get("addr", "")).strip().lower()
         (preferred if storer_target and addr == storer_target else others).append(meta)
     candidates = preferred + others
 

@@ -754,7 +754,6 @@ def chat_pull(self, message, *,
 
     dedup = self.dedup_pull
     if callable(dedup) and dedup(me, pull_sig):
-        log.warning("[chat_pull] Replay detected for %s from %s", me, client_ip)
         return {"type": "CHAT_NONE", "items": [], "error": "replay_detected"}
 
     items = self.mailbox_pull(me, n)

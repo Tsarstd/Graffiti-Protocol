@@ -383,9 +383,12 @@ class TxIn:
         raw = bytes.fromhex(data["script_sig"]) if data.get("script_sig") else b""
         script_sig = Script.parse(raw) if raw else Script([])
         witness = [bytes.fromhex(w) for w in data.get("witness", [])]
+        vout = data.get("vout")
+        if vout is None:
+            vout = data.get("index", 0)
         return cls(
             txid=bytes.fromhex(data["txid"]),
-            vout=int(data["vout"]),
+            vout=int(vout),
             amount=int(data.get("amount", 0)),
             script_sig=script_sig,
             witness=witness,

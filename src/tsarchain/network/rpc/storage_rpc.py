@@ -50,7 +50,7 @@ def handle_storage_rpc(
         log.warning("[storage_auth] forbidden storage RPC %s from %s", mtype, addr)
         return {"error": "forbidden: storage-only endpoint"}
 
-    storer_addr = str(peer_meta.get("addr") or peer_meta.get("address") or "").strip().lower()
+    storer_addr = str(peer_meta.get("addr", "")).strip().lower()
     if not storer_addr or not GRAFFITI._is_valid_tsar_address(storer_addr):
         log.warning("[storage_auth] invalid storer addr nid=%s ip=%s", src_node_id or "-", ip)
         return {"error": "storer_unregistered"}
@@ -113,7 +113,10 @@ def _resolve_storage_sender_meta(_, peers, ip, peer_port, src_node_id, src_pubke
 
 @benchmark(label="GRAFFITI_PROOF_SUBMIT", threshold_ms=100.0)
 def _handle_storage_proof_submit(self, message, storer_addr, ip, src_node_id):
-    ts_val = int(message.get("ts", 0))
+    try:
+        ts_val = int(message.get("ts", 0))
+    except (ValueError, TypeError):
+        return {"error": "replay_guard"}
     nonce_val = str(message.get("nonce") or "")
     sender_key = src_node_id or ip
     if not (ts_val and nonce_val and self.nonce_guard("storage_proof", sender_key, nonce_val, ts_val, CFG.REPLAY_WINDOW_SEC)):
@@ -123,16 +126,14 @@ def _handle_storage_proof_submit(self, message, storer_addr, ip, src_node_id):
     if err: return err
     art_id, epoch, offset, length, proof_hash, storer, height, seed = basic_fields
 
-    try:
-        reg = self.broadcast.utxodb._graffiti_registry
-    except AttributeError:
-        reg = None
+    utxo = self.broadcast.utxodb if self.broadcast else None
+    reg = utxo._graffiti_registry if utxo else None
     if not reg:
         return {"error": "registry_unavailable"}
     post = reg.get_post(art_id)
     if not post:
         return {"error": "unknown_art_id"}
-    size = int(post.get("size") or 0)
+    size = int(post.get("size", 0))
     if size <= 0 or (offset + length) > size:
         return {"error": "out_of_range", "size": size}
 
@@ -169,32 +170,30 @@ def _handle_storage_proof_submit(self, message, storer_addr, ip, src_node_id):
 
 @benchmark(label="GRAFFITI_BUILD_PAYOUT", threshold_ms=750.0)
 def _handle_storage_build_payout(self, message, storer_addr, ip, src_node_id):
-    ts_val = int(message.get("ts", 0))
+    try:
+        ts_val = int(message.get("ts", 0))
+    except (ValueError, TypeError):
+        return {"error": "replay_guard"}
     nonce_val = str(message.get("nonce") or "")
     sender_key = src_node_id or ip
     if not (ts_val and nonce_val and self.nonce_guard("storage_payout", sender_key, nonce_val, ts_val, CFG.REPLAY_WINDOW_SEC)):
         return {"error": "replay_guard"}
         
     art_id_raw = str(message.get("art_id") or "").strip()
-    art_id = GRAFFITI._normalize_art_id(art_id_raw, prefer_prefix=False)
+    try:
+        art_id = GRAFFITI._normalize_art_id(art_id_raw, prefer_prefix=False)
+    except (ValueError, TypeError):
+        return {"error": "bad_art_id"}
     
     err, recipients = _parse_payout_recipients(message, storer_addr)
     if err: return err
 
     fee_rate = int(message.get("fee_rate", CFG.DEFAULT_FEE_RATE_SATVB))
     epoch_req = int(message.get("epoch", -1))
-    try:
-        utxo = self.broadcast.utxodb
-    except AttributeError:
-        utxo = None
-    
+    utxo = self.broadcast.utxodb if self.broadcast else None
     if utxo is None:
         return {"error": "utxo_unavailable"}
-    
-    try:
-        reg = utxo._graffiti_registry
-    except AttributeError:
-        reg = None
+    reg = utxo._graffiti_registry if utxo else None
     proof_entry = reg.get_latest_proof(art_id, storer_addr) if reg else None
     proof_meta = None
     if proof_entry:
@@ -248,13 +247,19 @@ def _proof_epoch_window(self) -> tuple[int, int, int]:
 
 def _validate_proof_basic_fields(message, storer_addr):
     art_id_raw = str(message.get("art_id") or "").strip()
-    art_id = GRAFFITI._normalize_art_id(art_id_raw, prefer_prefix=False)
-    epoch = int(message.get("epoch", -1))
-    offset = int(message.get("offset", -1))
-    length = int(message.get("length", -1))
+    try:
+        art_id = GRAFFITI._normalize_art_id(art_id_raw, prefer_prefix=False)
+    except (ValueError, TypeError):
+        return {"error": "bad_art_id"}, None
+    try:
+        epoch = int(message.get("epoch", -1))
+        offset = int(message.get("offset", -1))
+        length = int(message.get("length", -1))
+        height = int(message.get("height", 0) or 0)
+    except (ValueError, TypeError):
+        return {"error": "bad_fields"}, None
     proof_hash = str(message.get("hash") or "").strip().lower()
     storer = str(message.get("storer") or "").strip().lower()
-    height = int(message.get("height", 0) or 0)
     seed = str(message.get("seed") or "").strip().lower()
     
     if epoch < 0 or offset < 0 or length <= 0 or not GRAFFITI._is_valid_sha256_hex(proof_hash):
@@ -351,8 +356,8 @@ def _parse_payout_recipients(message, storer_addr):
         return {"error": "payout_requires_single_recipient"}, None
     
     rec = recipients[0] if type(recipients[0]) is dict else {}
-    rec_addr = str(rec.get("addr") or rec.get("address") or "").strip().lower()
-    rec_amt = int(rec.get("amount", 0) or 0)
+    rec_addr = str(rec.get("addr", "")).strip().lower()
+    rec_amt = int(rec.get("amount", 0))
     
     if not rec_addr or not GRAFFITI._is_valid_tsar_address(rec_addr) or rec_amt <= 0:
         return {"error": "bad_recipients"}, None

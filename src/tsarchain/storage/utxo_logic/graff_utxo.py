@@ -73,16 +73,16 @@ class UTXOGraffitiMixin:
             log.warning("[_handle_graffiti_post] POST missing art_id/creator sha=%s tx=%s", sha_hex[:16], txid_hex)
             return
         pool_addr = GRAFFITI.derive_pool_address(art_id)
-        min_fee = int(GRAFFITI.calc_upload_fee_sats(int(meta.get("size") or 0)))
+        min_fee = int(GRAFFITI.calc_upload_fee_sats(int(meta.get("size", 0))))
         
-        paid = sum(int(info.get("amount") or 0) for info in outputs_info if info.get("address") == pool_addr)
+        paid = sum(int(info.get("amount", 0)) for info in outputs_info if info.get("address") == pool_addr)
         if paid < min_fee:
             log.warning("[_handle_graffiti_post] POST fee too low: paid=%s required=%s tx=%s", paid, min_fee, txid_hex)
             return
         
         entry = {
             "sha256": sha_hex,
-            "size": int(meta.get("size") or 0),
+            "size": int(meta.get("size", 0)),
             "mime": meta.get("mime"),
             "storer": meta.get("storer"),
             "receipt": meta.get("receipt"),
@@ -114,21 +114,21 @@ class UTXOGraffitiMixin:
             log.warning("[_handle_graffiti_comment] COMMENT references unknown art_id=%s tx=%s", art_id, txid_hex)
             return
 
-        pool_addr = post_entry.get("pool_address") or GRAFFITI.derive_pool_address(art_id)
-        creator_addr = post_entry.get("creator") or meta.get("creator")
+        pool_addr = post_entry.get("pool_address", GRAFFITI.derive_pool_address(art_id))
+        creator_addr = post_entry.get("creator", meta.get("creator"))
         if not creator_addr:
             log.warning("[_handle_graffiti_comment] COMMENT missing creator for art_id=%s", art_id)
             return
 
-        base_amount = int(meta.get("amount") or 0)
-        tip = int(meta.get("tip") or 0)
+        base_amount = int(meta.get("amount", 0))
+        tip = int(meta.get("tip", 0))
         if base_amount < int(CFG.GRAFFITI_COMMENT_MIN_FEE):
             log.warning("[_handle_graffiti_comment] COMMENT amount %s below minimum for art_id=%s", base_amount, art_id)
             return
 
         split = GRAFFITI.calc_comment_split(base_amount, tip)
-        paid_creator = sum(int(info.get("amount") or 0) for info in outputs_info if info.get("address") == creator_addr)
-        paid_pool = sum(int(info.get("amount") or 0) for info in outputs_info if info.get("address") == pool_addr)
+        paid_creator = sum(int(info.get("amount", 0)) for info in outputs_info if info.get("address") == creator_addr)
+        paid_pool = sum(int(info.get("amount", 0)) for info in outputs_info if info.get("address") == pool_addr)
 
         if paid_creator < split["creator_total"]:
             log.warning("[_handle_graffiti_comment] COMMENT royalty shortfall for art_id=%s paid=%s req=%s", art_id, paid_creator, split["creator_total"])
@@ -177,7 +177,7 @@ class UTXOGraffitiMixin:
         # Idempotent replay: allow same-epoch payout if txid already recorded; otherwise reject rewind.
         if epoch >= 0 and last_epoch >= 0 and epoch <= last_epoch:
             already = False
-            payouts = (self._graffiti_registry.data.get("payouts") or {}).get(art_id, [])
+            payouts = self._graffiti_registry.data.get("payouts", {}).get(art_id, [])
             already = any(p.get("txid") == txid_hex for p in payouts)
             if already:
                 # Ensure pool balance stays in sync with UTXO set even when we skip re-recording.
@@ -191,12 +191,12 @@ class UTXOGraffitiMixin:
         # Aggregate payments to recipients observed on-chain
         paid_map: dict[str, int] = {}
         for rec in recs:
-            addr = str(rec.get("addr") or rec.get("address") or "").strip().lower()
+            addr = str(rec.get("addr", rec.get("address", ""))).strip().lower()
             amt_req = int(rec.get("amount", 0))
             if not addr or amt_req <= 0:
                 continue
     
-            paid_actual = sum(int(info.get("amount") or 0) for info in outputs_info if (info.get("address") or "").strip().lower() == addr)
+            paid_actual = sum(int(info.get("amount", 0)) for info in outputs_info if (info.get("address") or "").strip().lower() == addr)
             if paid_actual < amt_req:
                 log.warning("[_handle_graffiti_payout] PAYOUT shortfall to %s for art_id=%s paid=%s req=%s", addr, art_id, paid_actual, amt_req)
             paid_map[addr] = max(paid_actual, amt_req)
