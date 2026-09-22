@@ -48,7 +48,7 @@ external-ip=${PUBLIC_IP}
 
 # Range Port Media UDP (P2P Relay)
 min-port=49152
-max-port=49252
+max-port=49352
 
 # Required for WebRTC
 fingerprint
@@ -58,10 +58,10 @@ realm=${PUBLIC_IP}
 # Mobile App Credentials
 user=${TURN_USER}:${TURN_PASS}
 
-# Security & Quota Rate Limiting
+# Security & Quota Rate Limiting (3 Mbps per session for smooth 720p HD video)
 user-quota=10
 total-quota=100
-max-bps=196608
+max-bps=3000000
 no-multicast-peers
 
 # Security and Optimization
@@ -86,12 +86,18 @@ echo -e "${GREEN}===============================================================
 echo -e "${GREEN}Coturn STUN/TURN service is active and running!${NC}"
 echo -e "${GREEN}================================================================${NC}"
 echo ""
+echo -e "${YELLOW}IMPORTANT: Ensure VPS firewall allows TURN ports:${NC}"
+echo -e "  sudo ufw allow ${TURN_PORT}/tcp"
+echo -e "  sudo ufw allow ${TURN_PORT}/udp"
+echo -e "  sudo ufw allow 49152:49352/udp"
+echo ""
 echo -e "To configure Flutter (mobile app), insert into iceServers:"
 echo ""
 echo -e "${YELLOW}{"
 echo -e "  'urls': ["
 echo -e "    'stun:${PUBLIC_IP}:${TURN_PORT}',"
-echo -e "    'turn:${PUBLIC_IP}:${TURN_PORT}',"
+echo -e "    'turn:${PUBLIC_IP}:${TURN_PORT}?transport=udp',"
+echo -e "    'turn:${PUBLIC_IP}:${TURN_PORT}?transport=tcp',"
 echo -e "  ],"
 echo -e "  'username': '${TURN_USER}',"
 echo -e "  'credential': '***',"

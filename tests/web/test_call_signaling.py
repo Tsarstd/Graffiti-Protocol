@@ -299,3 +299,101 @@ def test_call_signaling_dual_guard_deactivated():
     signaling_svc.shutdown()
     httpd.shutdown()
     httpd.server_close()
+
+
+def test_call_signaling_early_ice_buffering_and_auto_clear():
+    port = _find_free_port()
+    signaling_svc = CallSignalingService("127.0.0.1", 38169)
+    handler_cls = create_handler_class(routes=None, signaling=signaling_svc)
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", port), handler_cls)
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t.start()
+    time.sleep(0.05)
+
+    alice_sk, alice_pk, alice_addr = _generate_test_wallet()
+    bob_sk, bob_pk, bob_addr = _generate_test_wallet()
+
+    with patch.object(signaling_svc, "_check_node_chat_status", return_value=True):
+        alice_client = SimpleWSClient("127.0.0.1", port)
+        c_alice = alice_client.recv_json()
+        alice_client.send_json({
+            "type": "AUTH_RESPONSE",
+            "address": alice_addr,
+            "pubkey": alice_pk,
+            "sig": _sign_challenge(alice_sk, alice_addr, c_alice["nonce"]),
+        })
+        assert alice_client.recv_json()["type"] == "AUTH_OK"
+
+        bob_client = SimpleWSClient("127.0.0.1", port)
+        c_bob = bob_client.recv_json()
+        bob_client.send_json({
+            "type": "AUTH_RESPONSE",
+            "address": bob_addr,
+            "pubkey": bob_pk,
+            "sig": _sign_challenge(bob_sk, bob_addr, c_bob["nonce"]),
+        })
+        assert bob_client.recv_json()["type"] == "AUTH_OK"
+
+        # 1. Alice sends ICE candidate BEFORE CALL_OFFER (race condition reproduction)
+        call_id = "call_race_test_1"
+        alice_client.send_json({
+            "type": "CALL_ICE_CANDIDATE",
+            "call_id": call_id,
+            "candidate": {"candidate": "early_candidate_alice", "sdpMid": "0"},
+        })
+        # Wait up to 1.0s for server thread to process packet
+        for _ in range(20):
+            if call_id in signaling_svc._pending_ice_candidates:
+                break
+            time.sleep(0.05)
+        # Verify it is buffered in signaling_svc._pending_ice_candidates
+        assert call_id in signaling_svc._pending_ice_candidates
+
+        # 2. Now Alice sends the CALL_OFFER
+        alice_client.send_json({
+            "type": "CALL_OFFER",
+            "call_id": call_id,
+            "to": bob_addr,
+            "media_type": "video",
+            "sdp": "v=0\r\noffer_sdp",
+        })
+
+        # Bob receives CALL_INCOMING
+        incoming = bob_client.recv_json()
+        assert incoming["type"] == "CALL_INCOMING"
+        assert incoming["call_id"] == call_id
+
+        # AND Bob receives the buffered early ICE candidate immediately after!
+        buffered_cand = bob_client.recv_json()
+        assert buffered_cand["type"] == "CALL_ICE_CANDIDATE"
+        assert buffered_cand["call_id"] == call_id
+        assert buffered_cand["candidate"]["candidate"] == "early_candidate_alice"
+
+        # 3. Test Auto-clear stale call: Alice starts call_race_test_2 without hanging up call_race_test_1
+        call_id_2 = "call_race_test_2"
+        alice_client.send_json({
+            "type": "CALL_OFFER",
+            "call_id": call_id_2,
+            "to": bob_addr,
+            "media_type": "audio",
+            "sdp": "v=0\r\noffer_sdp_2",
+        })
+
+        # Bob receives superseded hangup for call 1
+        stale_hangup = bob_client.recv_json()
+        assert stale_hangup["type"] == "CALL_HANGUP"
+        assert stale_hangup["call_id"] == call_id
+        assert stale_hangup["reason"] == "superseded"
+
+        # Bob receives the incoming call 2 (Alice was not locked out by already_in_call!)
+        incoming_2 = bob_client.recv_json()
+        assert incoming_2["type"] == "CALL_INCOMING"
+        assert incoming_2["call_id"] == call_id_2
+
+        alice_client.close()
+        bob_client.close()
+
+    signaling_svc.shutdown()
+    httpd.shutdown()
+    httpd.server_close()

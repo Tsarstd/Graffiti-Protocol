@@ -163,6 +163,7 @@ class CallSignalingService:
         self.node_port: int = int(node_port)
         self.connected_clients: Dict[str, WebSocketConnection] = {}
         self.active_calls: Dict[str, CallSession] = {}
+        self._pending_ice_candidates: Dict[str, List[tuple[str, dict, float]]] = {}
         self._call_attempts_by_addr: Dict[str, List[float]] = {}
         self._call_attempts_by_ip: Dict[str, List[float]] = {}
         self._lock = threading.Lock()
@@ -185,6 +186,7 @@ class CallSignalingService:
                 conn.close()
             self.connected_clients.clear()
             self.active_calls.clear()
+            self._pending_ice_candidates.clear()
         log.debug("[call_signaling] Service shut down successfully")
 
     def handle_connection(self, sock: Any, client_ip: str) -> None:
@@ -319,14 +321,14 @@ class CallSignalingService:
             conn.send_json({"type": "CALL_REJECTED", "call_id": call_id, "reason": "cannot_call_self"})
             return
 
-        # Rate Limiting Guard: max 5 calls / 60s per caller address, max 10 / 60s per client IP
+        # Rate Limiting Guard: max 15 calls / 60s per caller address, max 30 / 60s per client IP
         now = time.time()
         with self._lock:
             self._prune_rate_limits(now)
             addr_attempts = self._call_attempts_by_addr.get(sender, [])
             ip_attempts = self._call_attempts_by_ip.get(conn.client_ip, [])
 
-            if len(addr_attempts) >= 5 or len(ip_attempts) >= 10:
+            if len(addr_attempts) >= 15 or len(ip_attempts) >= 30:
                 log.warning("[call_signaling] Rate limit exceeded for caller=%s (ip=%s)", sender, conn.client_ip)
                 conn.send_json({
                     "type": "CALL_REJECTED",
@@ -352,6 +354,7 @@ class CallSignalingService:
             })
             return
 
+        pending_cands: List[tuple[str, dict, float]] = []
         with self._lock:
             callee_conn = self.connected_clients.get(target)
             if not callee_conn or callee_conn.closed:
@@ -359,10 +362,20 @@ class CallSignalingService:
                 conn.send_json({"type": "CALL_REJECTED", "call_id": call_id, "reason": "recipient_offline"})
                 return
 
-            # Check if either party is currently in an active call
+            # If sender is still recorded in an active call, auto-clear stale call instead of locking out
             if self._is_party_in_call(sender):
-                conn.send_json({"type": "CALL_REJECTED", "call_id": call_id, "reason": "already_in_call"})
-                return
+                stale_ids = [
+                    cid for cid, sess in list(self.active_calls.items())
+                    if sess.caller == sender or sess.callee == sender
+                ]
+                for scid in stale_ids:
+                    stale_sess = self.active_calls.pop(scid, None)
+                    if stale_sess:
+                        peer_addr = stale_sess.callee if stale_sess.caller == sender else stale_sess.caller
+                        peer_c = self.connected_clients.get(peer_addr)
+                        if peer_c and not peer_c.closed:
+                            peer_c.send_json({"type": "CALL_HANGUP", "call_id": scid, "reason": "superseded"})
+                        log.debug("[call_signaling] Auto-cleared stale call session %s for caller %s", scid, sender)
 
             if self._is_party_in_call(target):
                 log.debug("[call_signaling] Call busy: target %s is in another call", target)
@@ -371,6 +384,8 @@ class CallSignalingService:
 
             session = CallSession(call_id, sender, target, media_type)
             self.active_calls[call_id] = session
+            # Drain any pending early ICE candidates buffered for this call_id
+            pending_cands = self._pending_ice_candidates.pop(call_id, [])
 
         callee_conn.send_json({
             "type": "CALL_INCOMING",
@@ -388,6 +403,10 @@ class CallSignalingService:
             call_id, sender, target, media_type, has_audio, has_video
         )
 
+        # Forward any early buffered ICE candidates that arrived before CALL_OFFER
+        for p_sender, p_msg, _ in pending_cands:
+            self._forward_ice_candidate(session, p_sender, p_msg)
+
     def _handle_call_ringing(self, sender: str, msg: dict) -> None:
         call_id = (msg.get("call_id") or "").strip()
         with self._lock:
@@ -404,6 +423,7 @@ class CallSignalingService:
         call_id = (msg.get("call_id") or "").strip()
         sdp = msg.get("sdp")
 
+        pending_cands: List[tuple[str, dict, float]] = []
         with self._lock:
             session = self.active_calls.get(call_id)
             if not session or session.callee != sender:
@@ -412,6 +432,7 @@ class CallSignalingService:
             session.state = "connected"
             session.started_at = time.time()
             caller_conn = self.connected_clients.get(session.caller)
+            pending_cands = self._pending_ice_candidates.pop(call_id, [])
 
         if caller_conn and not caller_conn.closed:
             caller_conn.send_json({
@@ -427,6 +448,10 @@ class CallSignalingService:
                 call_id, session.caller, sender, has_audio, has_video
             )
 
+        # Drain any candidates buffered while awaiting answer
+        for p_sender, p_msg, _ in pending_cands:
+            self._forward_ice_candidate(session, p_sender, p_msg)
+
     def _handle_ice_candidate(self, sender: str, msg: dict) -> None:
         call_id = (msg.get("call_id") or "").strip()
         candidate = msg.get("candidate")
@@ -434,14 +459,23 @@ class CallSignalingService:
             log.warning("[call_signaling] Ignored malformed/empty ICE candidate from %s (call_id=%s)", sender, call_id)
             return
 
-        target_conn = None
-        peer_addr = None
         with self._lock:
             session = self.active_calls.get(call_id)
             if not session:
-                log.warning("[call_signaling] Dropped ICE candidate for inactive call_id=%s from %s", call_id, sender)
+                # Buffer candidate temporarily in case CALL_OFFER or CALL_ANSWER is still in transit
+                cands = self._pending_ice_candidates.setdefault(call_id, [])
+                if len(cands) < 32:
+                    cands.append((sender, msg, time.time()))
+                    log.debug("[call_signaling] Buffered early ICE candidate for pending call_id=%s from %s", call_id, sender)
                 return
-            peer_addr = session.callee if session.caller == sender else session.caller
+
+        self._forward_ice_candidate(session, sender, msg)
+
+    def _forward_ice_candidate(self, session: CallSession, sender: str, msg: dict) -> None:
+        call_id = session.call_id
+        candidate = msg.get("candidate")
+        peer_addr = session.callee if session.caller == sender else session.caller
+        with self._lock:
             target_conn = self.connected_clients.get(peer_addr)
 
         if not target_conn or target_conn.closed:
@@ -492,6 +526,7 @@ class CallSignalingService:
 
         with self._lock:
             session = self.active_calls.pop(call_id, None)
+            self._pending_ice_candidates.pop(call_id, None)
             if session:
                 peer_addr = session.callee if session.caller == sender else session.caller
                 peer_conn = self.connected_clients.get(peer_addr)
@@ -522,6 +557,8 @@ class CallSignalingService:
                 if sess.caller == addr or sess.callee == addr
             ]
             terminated_calls = [self.active_calls.pop(cid) for cid in to_remove]
+            for cid in to_remove:
+                self._pending_ice_candidates.pop(cid, None)
 
         for sess in terminated_calls:
             other = sess.callee if sess.caller == addr else sess.caller
@@ -540,7 +577,7 @@ class CallSignalingService:
         conn.close()
 
     def _prune_rate_limits(self, now: float) -> None:
-        """Prunes call rate limit sliding windows older than 60 seconds."""
+        """Prunes call rate limit sliding windows older than 60s and pending ICE older than 15s."""
         cutoff = now - 60.0
         for k in list(self._call_attempts_by_addr.keys()):
             v = [t for t in self._call_attempts_by_addr.get(k, []) if t > cutoff]
@@ -554,6 +591,15 @@ class CallSignalingService:
                 self._call_attempts_by_ip[k] = v
             else:
                 self._call_attempts_by_ip.pop(k, None)
+
+        # Prune pending ICE candidates older than 15 seconds
+        cand_cutoff = now - 15.0
+        for k in list(self._pending_ice_candidates.keys()):
+            v = [item for item in self._pending_ice_candidates.get(k, []) if item[2] > cand_cutoff]
+            if v:
+                self._pending_ice_candidates[k] = v
+            else:
+                self._pending_ice_candidates.pop(k, None)
 
     def _timeout_watchdog_loop(self) -> None:
         """Periodically checks timeouts, prunes rate limits, and sends heartbeat PINGs."""
