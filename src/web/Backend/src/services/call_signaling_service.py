@@ -542,14 +542,14 @@ class CallSignalingService:
     def _prune_rate_limits(self, now: float) -> None:
         """Prunes call rate limit sliding windows older than 60 seconds."""
         cutoff = now - 60.0
-        for k in (self._call_attempts_by_addr.keys()):
-            v = [t for t in self._call_attempts_by_addr[k] if t > cutoff]
+        for k in list(self._call_attempts_by_addr.keys()):
+            v = [t for t in self._call_attempts_by_addr.get(k, []) if t > cutoff]
             if v:
                 self._call_attempts_by_addr[k] = v
             else:
                 self._call_attempts_by_addr.pop(k, None)
-        for k in (self._call_attempts_by_ip.keys()):
-            v = [t for t in self._call_attempts_by_ip[k] if t > cutoff]
+        for k in list(self._call_attempts_by_ip.keys()):
+            v = [t for t in self._call_attempts_by_ip.get(k, []) if t > cutoff]
             if v:
                 self._call_attempts_by_ip[k] = v
             else:
