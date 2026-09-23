@@ -330,6 +330,20 @@ class CallSignalingService:
             for p_sender, p_msg, _ in pending_cands:
                 self._forward_ice_candidate(sess, p_sender, p_msg)
 
+        # Also drain any buffered ICE candidates for existing active calls involving this client
+        active_cands_to_drain: List[tuple[CallSession, List[tuple[str, dict, float]]]] = []
+        with self._lock:
+            for scid, sess in list(self.active_calls.items()):
+                if sess.caller == addr or sess.callee == addr:
+                    cands = self._pending_ice_candidates.pop(scid, [])
+                    if cands:
+                        active_cands_to_drain.append((sess, cands))
+
+        for sess, cands in active_cands_to_drain:
+            for p_sender, p_msg, _ in cands:
+                if p_sender != addr:
+                    self._forward_ice_candidate(sess, p_sender, p_msg)
+
     def _handle_call_offer(self, conn: WebSocketConnection, sender: str, msg: dict) -> None:
         target = (msg.get("to") or "").strip().lower()
         call_id = (msg.get("call_id") or "").strip()
@@ -540,7 +554,11 @@ class CallSignalingService:
             target_conn = self.connected_clients.get(peer_addr)
 
         if not target_conn or target_conn.closed:
-            log.warning("[call_signaling] Cannot forward ICE candidate: peer %s offline (call_id=%s)", peer_addr, call_id)
+            with self._lock:
+                cands = self._pending_ice_candidates.setdefault(call_id, [])
+                if len(cands) < 64:
+                    cands.append((sender, msg, time.time()))
+            log.info("[call_signaling] Buffered ICE candidate for offline peer %s (call_id=%s)", peer_addr, call_id)
             return
 
         out_msg: Dict[str, Any] = {
