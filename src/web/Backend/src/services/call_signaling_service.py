@@ -5,12 +5,12 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
-import secrets
-import struct
-import threading
 import time
+import json
+import struct
+import secrets
+import hashlib
+import threading
 from typing import Optional, Dict, Any, List
 
 from bech32 import bech32_decode, convertbits
@@ -19,6 +19,7 @@ from tsarchain.utils.helpers import hash160
 from tsarchain.utils.tsar_logging import get_ctx_logger
 from tsarchain.network.rpc.user_rpc.common import verify_chat_signatures
 from web.Backend.src.core.logic_web.rpc_client import get_client, rpc_send
+from tsarchain.utils.fcm_service import FCMService
 
 log = get_ctx_logger("tsarchain.web.Backend.call_signaling_service")
 
@@ -33,11 +34,13 @@ CALL_OFFER_TIMEOUT_S = 35.0
 
 
 class CallSession:
-    def __init__(self, call_id: str, caller: str, callee: str, media_type: str):
+    def __init__(self, call_id: str, caller: str, callee: str, media_type: str, sdp: Any = None, caller_alias: str = ""):
         self.call_id: str = call_id
         self.caller: str = caller
         self.callee: str = callee
         self.media_type: str = media_type
+        self.sdp: Any = sdp
+        self.caller_alias: str = caller_alias
         self.state: str = "offering"  # offering, ringing, connected, ended
         self.created_at: float = time.time()
         self.started_at: float = 0.0
@@ -158,9 +161,10 @@ class CallSignalingService:
     - Zero dynamic reflection (100% Graffiti Protocol compliant).
     """
 
-    def __init__(self, node_host: str = "127.0.0.1", node_port: int = 38169):
+    def __init__(self, node_host: str = "127.0.0.1", node_port: int = 38169, fcm: Optional[FCMService] = None):
         self.node_host: str = str(node_host)
         self.node_port: int = int(node_port)
+        self.fcm: FCMService = fcm if fcm is not None else FCMService.get_instance()
         self.connected_clients: Dict[str, WebSocketConnection] = {}
         self.active_calls: Dict[str, CallSession] = {}
         self._pending_ice_candidates: Dict[str, List[tuple[str, dict, float]]] = {}
@@ -305,6 +309,27 @@ class CallSignalingService:
         conn.send_json({"type": "AUTH_OK", "address": addr})
         log.debug("[call_signaling] Client authenticated: addr=%s (ip=%s)", addr, conn.client_ip)
 
+        # Forward any pending call offers queued while callee was offline
+        pending_inbounds: List[tuple[CallSession, List[tuple[str, dict, float]]]] = []
+        with self._lock:
+            for scid, sess in list(self.active_calls.items()):
+                if sess.callee == addr and sess.state == "offering" and sess.sdp is not None:
+                    pending_cands = self._pending_ice_candidates.pop(scid, [])
+                    pending_inbounds.append((sess, pending_cands))
+
+        for sess, pending_cands in pending_inbounds:
+            conn.send_json({
+                "type": "CALL_INCOMING",
+                "call_id": sess.call_id,
+                "from": sess.caller,
+                "media_type": sess.media_type,
+                "sdp": sess.sdp,
+                "caller_alias": sess.caller_alias or sess.caller,
+                "ts": int(sess.created_at),
+            })
+            for p_sender, p_msg, _ in pending_cands:
+                self._forward_ice_candidate(sess, p_sender, p_msg)
+
     def _handle_call_offer(self, conn: WebSocketConnection, sender: str, msg: dict) -> None:
         target = (msg.get("to") or "").strip().lower()
         call_id = (msg.get("call_id") or "").strip()
@@ -358,8 +383,44 @@ class CallSignalingService:
         with self._lock:
             callee_conn = self.connected_clients.get(target)
             if not callee_conn or callee_conn.closed:
-                log.warning("[call_signaling] Call failed: target %s is offline (caller=%s)", target, sender)
-                conn.send_json({"type": "CALL_REJECTED", "call_id": call_id, "reason": "recipient_offline"})
+                target_token = self.fcm.get_token(target)
+                if not target_token:
+                    log.warning("[call_signaling] Call failed: target %s is offline without FCM token (caller=%s)", target, sender)
+                    conn.send_json({"type": "CALL_REJECTED", "call_id": call_id, "reason": "recipient_offline"})
+                    return
+
+                # Target has registered FCM token. Clear any stale session for caller
+                if self._is_party_in_call(sender):
+                    stale_ids = [
+                        cid for cid, sess in list(self.active_calls.items())
+                        if sess.caller == sender or sess.callee == sender
+                    ]
+                    for scid in stale_ids:
+                        stale_sess = self.active_calls.pop(scid, None)
+                        if stale_sess:
+                            peer_addr = stale_sess.callee if stale_sess.caller == sender else stale_sess.caller
+                            peer_c = self.connected_clients.get(peer_addr)
+                            if peer_c and not peer_c.closed:
+                                peer_c.send_json({"type": "CALL_HANGUP", "call_id": scid, "reason": "superseded"})
+
+                if self._is_party_in_call(target):
+                    log.debug("[call_signaling] Call busy: target %s is in another call", target)
+                    conn.send_json({"type": "CALL_BUSY", "call_id": call_id, "reason": "user_busy"})
+                    return
+
+                caller_alias = str(msg.get("caller_alias") or sender)
+                session = CallSession(call_id, sender, target, media_type, sdp=sdp, caller_alias=caller_alias)
+                self.active_calls[call_id] = session
+
+                # Dispatch high-priority FCM push to wake up callee device (without oversized SDP)
+                self.fcm.send_call_push(
+                    callee_addr=target,
+                    caller_addr=sender,
+                    call_id=call_id,
+                    media_type=media_type,
+                    caller_alias=caller_alias,
+                )
+                conn.send_json({"type": "CALL_RINGING", "call_id": call_id})
                 return
 
             # If sender is still recorded in an active call, auto-clear stale call instead of locking out
@@ -540,6 +601,9 @@ class CallSignalingService:
                 "reason": reason,
                 "duration_s": round(duration, 1),
             })
+        elif session:
+            peer_addr = session.callee if session.caller == sender else session.caller
+            self.fcm.send_call_hangup_push(peer_addr, call_id)
 
         if session:
             log.debug("[call_signaling] Call terminated: call_id=%s reason=%s duration=%.1fs", call_id, reason, duration)
@@ -570,6 +634,8 @@ class CallSignalingService:
                     "call_id": sess.call_id,
                     "reason": "peer_disconnected",
                 })
+            else:
+                self.fcm.send_call_hangup_push(other, sess.call_id)
             log.debug("[call_signaling] Terminated call %s due to peer disconnect (%s)", sess.call_id, addr)
 
         if addr:

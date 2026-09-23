@@ -27,6 +27,7 @@ from tsarchain.utils.benchmarks import benchmark
 from web.Backend.src.utils.rate_limit import RateLimiter
 from web.Backend.src.routes.health import handle_health
 from web.Backend.src.services.call_signaling_service import CallSignalingService, WS_RFC6455_GUID
+from tsarchain.utils.fcm_service import FCMService
 from web.Backend.src.routes.explorer_routes import (
     ExplorerRoutes,
     CACHE_DIR,
@@ -136,9 +137,12 @@ def generate_video_thumbnail_webp(video_path: str, output_path: str) -> bool:
 def create_handler_class(
     routes: Optional[ExplorerRoutes] = None,
     signaling: Optional[CallSignalingService] = None,
+    fcm: Optional[FCMService] = None,
 ):
+    if fcm is None:
+        fcm = FCMService.get_instance()
     if signaling is None and routes is not None:
-        signaling = CallSignalingService(node_host=routes.node_host, node_port=routes.node_port)
+        signaling = CallSignalingService(node_host=routes.node_host, node_port=routes.node_port, fcm=fcm)
 
     class ExplorerHTTPRequestHandler(BaseHTTPRequestHandler):
         # Suppress default server version header
@@ -210,6 +214,37 @@ def create_handler_class(
                 signaling.handle_connection(self.connection, client_ip)
 
 
+        def _read_request_body(self) -> bytes:
+            te = (self.headers.get("Transfer-Encoding") or "").lower()
+            if "chunked" in te:
+                chunks = []
+                total = 0
+                while True:
+                    line = self.rfile.readline().strip()
+                    if not line:
+                        break
+                    try:
+                        chunk_len = int(line, 16)
+                    except ValueError:
+                        break
+                    if chunk_len == 0:
+                        self.rfile.readline()
+                        break
+                    total += chunk_len
+                    if total > 65536:
+                        return b""
+                    chunks.append(self.rfile.read(chunk_len))
+                    self.rfile.readline()
+                return b"".join(chunks)
+
+            try:
+                length_val = int(self.headers.get("Content-Length") or 0)
+            except Exception:
+                length_val = 0
+            if length_val <= 0 or length_val > 65536:
+                return b""
+            return self.rfile.read(length_val)
+
         def do_POST(self) -> None:
             try:
                 client_ip = self._get_client_ip()
@@ -228,6 +263,71 @@ def create_handler_class(
                         return
                     code, resp = routes.handle_prefetch_blocks()
                     self._send_json(code, resp, api_hdrs)
+                    return
+
+                if path == "/api/fcm/register":
+                    body_bytes = self._read_request_body()
+                    if not body_bytes:
+                        self._send_json(400, {"error": "bad_request", "detail": "invalid_payload_length"}, api_hdrs)
+                        return
+                    try:
+                        body_json = json.loads(body_bytes.decode("utf-8"))
+                    except Exception:
+                        self._send_json(400, {"error": "bad_request", "detail": "invalid_json"}, api_hdrs)
+                        return
+                    if type(body_json) is not dict:
+                        self._send_json(400, {"error": "bad_request", "detail": "expected_json_object"}, api_hdrs)
+                        return
+
+                    addr = str(body_json.get("address", "")).strip().lower()
+                    token = str(body_json.get("token", "")).strip()
+                    pubkey = str(body_json.get("pubkey", "")).strip().lower()
+                    sig = str(body_json.get("sig", "")).strip().lower()
+                    ts = int(body_json.get("ts", 0))
+
+                    ok, reason = fcm.register_token(
+                        address=addr,
+                        token=token,
+                        pubkey=pubkey,
+                        sig=sig,
+                        ts=ts,
+                        client_ip=client_ip,
+                    )
+                    if ok:
+                        self._send_json(200, {"status": "ok", "address": addr}, api_hdrs)
+                    else:
+                        self._send_json(400, {"error": "registration_failed", "reason": reason}, api_hdrs)
+                    return
+
+                if path == "/api/fcm/unregister":
+                    body_bytes = self._read_request_body()
+                    if not body_bytes:
+                        self._send_json(400, {"error": "bad_request", "detail": "invalid_payload_length"}, api_hdrs)
+                        return
+                    try:
+                        body_json = json.loads(body_bytes.decode("utf-8"))
+                    except Exception:
+                        self._send_json(400, {"error": "bad_request", "detail": "invalid_json"}, api_hdrs)
+                        return
+                    if type(body_json) is not dict:
+                        self._send_json(400, {"error": "bad_request", "detail": "expected_json_object"}, api_hdrs)
+                        return
+
+                    addr = str(body_json.get("address", "")).strip().lower()
+                    pubkey = str(body_json.get("pubkey", "")).strip().lower()
+                    sig = str(body_json.get("sig", "")).strip().lower()
+                    ts = int(body_json.get("ts", 0))
+
+                    ok, reason = fcm.unregister_token(
+                        address=addr,
+                        pubkey=pubkey,
+                        sig=sig,
+                        ts=ts,
+                    )
+                    if ok:
+                        self._send_json(200, {"status": "ok", "address": addr}, api_hdrs)
+                    else:
+                        self._send_json(400, {"error": "unregistration_failed", "reason": reason}, api_hdrs)
                     return
 
                 self._send_json(404, {"error": "not_found"}, api_hdrs)

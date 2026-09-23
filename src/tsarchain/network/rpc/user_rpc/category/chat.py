@@ -11,6 +11,7 @@ from bech32 import convertbits, bech32_decode
 from .....utils.helpers import hash160
 
 from .....utils import config as CFG
+from .....utils.fcm_service import FCMService
 from ...user_rpc import common as CM
 from .....utils.benchmarks import benchmark
 
@@ -667,6 +668,10 @@ def chat_send(self, message, pow_obj, base_identity, *,
         log.warning("[chat_send] Mailbox full for %s (dropped mid=%s)", to, mid)
         return {"type": "CHAT_ACK", "status": "mailbox_full"}
     self.enqueue_rcpt(frm, "delivered", mid, frm, to, ts)
+    # FCM push notification for mobile clients
+    fcm = FCMService.get_instance()
+    preview = str(message.get("preview") or message.get("text") or "").strip()
+    fcm.send_chat_push(target_addr=to, sender_addr=frm, msg_id=mid, ts=ts, preview=preview)
     return {"type": "CHAT_ACK", "status": "queued"}
 
 

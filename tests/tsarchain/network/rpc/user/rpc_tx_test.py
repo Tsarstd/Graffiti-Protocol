@@ -346,3 +346,43 @@ def test_new_tx_sender_from_data(mock_node, patch_allow_rpc_with_pow, patch_conf
     new_tx(mock_node, message, pow_obj, base_identity, addr, client_ip=client_ip)
     calls = patch_allow_rpc_with_pow.call_args_list
     assert calls[1][1]['identity'] == "sender456"
+
+
+def test_new_tx_triggers_fcm_push(mock_node, patch_allow_rpc_with_pow, patch_config, monkeypatch):
+    """Test that new_tx parses outputs and triggers FCM push for recipient."""
+    from unittest.mock import MagicMock
+    from tsarchain.utils.fcm_service import FCMService
+    from tsarchain.utils.helpers import Script
+    from bech32 import bech32_encode, convertbits
+
+    mock_fcm = MagicMock()
+    monkeypatch.setattr(FCMService, "get_instance", lambda: mock_fcm)
+
+    addr_recipient = bech32_encode("tsar", [0] + list(convertbits(b"r" * 20, 8, 5, True)))
+    addr_sender = bech32_encode("tsar", [0] + list(convertbits(b"s" * 20, 8, 5, True)))
+
+    spk_recipient = Script.p2wpkh_script(addr_recipient).serialize().hex()
+    spk_sender = Script.p2wpkh_script(addr_sender).serialize().hex()
+
+    valid_txid = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    message = {
+        "from_addr": addr_sender,
+        "data": {
+            "txid": valid_txid,
+            "outputs": [
+                {"script_pubkey": spk_recipient, "amount": 50000000},
+                {"script_pubkey": spk_sender, "amount": 100000000},
+            ],
+        },
+    }
+    mock_node.broadcast.receive_tx.return_value = True
+
+    result = new_tx(mock_node, message, None, "id", "addr", client_ip="1.2.3.4")
+    assert result["status"] == "ok"
+    mock_fcm.send_tx_push.assert_called_once_with(
+        target_addr=addr_recipient,
+        txid=valid_txid,
+        amount_sat=50000000,
+        is_incoming=True,
+        sender_addr=addr_sender,
+    )
