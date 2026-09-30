@@ -252,7 +252,7 @@ def test_handler_suppresses_abrupt_disconnect():
 
 def test_get_video_duration():
     from unittest.mock import MagicMock
-    from web.Backend.src.server import get_video_duration
+    from web.Backend.src.utils.media_processing import get_video_duration
 
     # 1. ffprobe success
     mock_res = MagicMock(returncode=0, stdout="42.50\n")
@@ -272,12 +272,12 @@ def test_get_video_duration():
 
 
 def test_generate_video_thumbnail_webp_midpoint(tmp_path):
-    from web.Backend.src.server import generate_video_thumbnail_webp
+    from web.Backend.src.utils.media_processing import generate_video_thumbnail_webp
 
     out_webp = str(tmp_path / "thumb.webp")
 
     # Mock duration = 20.0s -> midpoint = 10.0s
-    with patch("web.Backend.src.server.get_video_duration", return_value=20.0):
+    with patch("web.Backend.src.utils.media_processing.get_video_duration", return_value=20.0):
         def fake_run(cmd, **kwargs):
             # Verify midpoint seeking -ss 10.00
             assert "-ss" in cmd
@@ -299,10 +299,8 @@ def test_generate_video_thumbnail_webp_midpoint(tmp_path):
 
 
 def test_video_thumbnail_benchmark_threshold_warning(tmp_path):
-    from web.Backend.src.server import generate_video_thumbnail_webp
-
     out_webp = str(tmp_path / "thumb.webp")
-    with patch("web.Backend.src.server.get_video_duration", return_value=10.0):
+    with patch("web.Backend.src.utils.media_processing.get_video_duration", return_value=10.0):
         def slow_run(cmd, **kwargs):
             time.sleep(0.01)  # small sleep
             with open(out_webp, "wb") as f:

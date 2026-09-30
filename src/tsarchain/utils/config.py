@@ -157,6 +157,12 @@ WEB_NODE_PORT       = 38169  # default TsarChain node RPC port
 WEB_ALLOWED_ORIGINS = "*"
 
 
+# ---- FIREBASE CLOUD MESSAGING (FCM) ----
+# NOTE: The 'fcm_service_admin.json' credential file must be created independently to use the FCM feature.
+FCM_KEY_PATH   = "data/fcm_service_admin.json"
+FCM_TOKEN_PATH = "data/fcm_tokens.json"
+
+
 # ---- SNAPSHOT MODES (FAST SYNC BOOTSTRAP) ----
 '''
 Set True on new/client nodes to download snapshot (.tar.gz) on startup.

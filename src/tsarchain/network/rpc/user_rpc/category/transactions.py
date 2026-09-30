@@ -3,9 +3,11 @@
 # Part of TsarChain — see LICENSE
 # Refs: see REFERENCES.md
 
+from .....core.tx import Tx
 from .....utils.benchmarks import benchmark
 
 from .....utils import config as CFG
+from .....utils.fcm_service import FCMService
 from ...user_rpc import common as CM
 
 # ---------------- Logger ----------------
@@ -60,13 +62,31 @@ def new_tx(self, message, pow_obj, base_identity, addr, *, client_ip, **kwargs):
         message["phase"] = "stem"
 
     success = self.broadcast.receive_tx(message, addr, self.peers)
-    if success:
-        txid = (message.get("data") or {}).get("txid")
-        return {"status": "ok", "txid": txid}
-    else:
+    if not success:
         reason = self.broadcast.mempool.last_error_reason
         log.warning("[new_tx] Transaction rejected by mempool for %s: %s", sender_addr or "unknown", reason)
         return {"status": "error", "reason": (reason or "invalid tx")}
+
+    tx_data = message.get("data") or {}
+    txid = str(tx_data.get("txid") or message.get("txid") or "")
+    try:
+        tx = Tx.from_dict(tx_data)
+        txid = tx.txid.hex() if tx.txid else txid
+        fcm = FCMService.get_instance()
+        for out in tx.outputs:
+            target = str(out.address or "").strip().lower()
+            if target and (target != sender_addr or len(tx.outputs) == 1):
+                fcm.send_tx_push(
+                    target_addr=target,
+                    txid=txid,
+                    amount_sat=out.amount,
+                    is_incoming=True,
+                    sender_addr=sender_addr,
+                )
+    except Exception as exc:
+        log.debug("[new_tx_fcm] Skipped push: %s", exc)
+
+    return {"status": "ok", "txid": txid}
 
 
 @benchmark(label="CREATE_TX", threshold_ms=100.0)
