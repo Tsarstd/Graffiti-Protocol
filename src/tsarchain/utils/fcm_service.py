@@ -13,6 +13,7 @@ import threading
 import firebase_admin
 from typing import Optional, Dict, Any
 from firebase_admin import credentials, messaging
+from concurrent.futures import ThreadPoolExecutor
 
 from bech32 import bech32_decode, convertbits
 from tsarchain.utils import config as CFG
@@ -65,6 +66,7 @@ class FCMService:
         self._db_path = str(db_path) if db_path else CFG.FCM_TOKEN_PATH
         self._db_mtime = 0.0
         self._firebase_initialized = False
+        self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="fcm_push")
         self._init_firebase()
         self._load_tokens()
 
@@ -194,6 +196,42 @@ class FCMService:
 
     # ---------------- Push Dispatchers ----------------
 
+    def shutdown(self, wait: bool = False) -> None:
+        """Shuts down the background FCM thread pool."""
+        self._executor.shutdown(wait=wait, cancel_futures=True)
+
+    def _send_message(
+        self,
+        msg: messaging.Message,
+        label: str,
+        target_addr: str,
+        extra_info: str = "",
+        sync: bool = False,
+    ) -> bool:
+        if sync:
+            return self._do_send(msg, label, target_addr, extra_info)
+        try:
+            self._executor.submit(self._do_send, msg, label, target_addr, extra_info)
+            return True
+        except Exception as exc:
+            log.warning("[%s] Failed to enqueue push to %s: %s", label, target_addr, exc)
+            return False
+
+    def _do_send(
+        self,
+        msg: messaging.Message,
+        label: str,
+        target_addr: str,
+        extra_info: str = "",
+    ) -> bool:
+        try:
+            resp = messaging.send(msg)
+            log.debug("[%s] Push sent to %s %s (msg_id: %s)", label, target_addr, extra_info, resp)
+            return True
+        except Exception as exc:
+            log.warning("[%s] Error sending push to %s: %s", label, target_addr, exc)
+            return False
+
     def send_call_push(
         self,
         callee_addr: str,
@@ -201,6 +239,7 @@ class FCMService:
         call_id: str,
         media_type: str,
         caller_alias: str = "",
+        sync: bool = False,
     ) -> bool:
         """Dispatches high-priority wake-up data push to callee device for incoming call."""
         token = self.get_token(callee_addr)
@@ -208,60 +247,45 @@ class FCMService:
             log.debug("[fcm_push_call] FCM not ready or no token for callee %s", callee_addr)
             return False
 
-        try:
-            # NOTE: "from" is a reserved key in FCM data payload and causes Google API rejection.
-            # We use "caller_address" and "peer_address" instead.
-            # SDP is excluded from FCM data push to prevent exceeding the 4096-byte limit.
-            data_payload = {
-                "type": "incoming_call",
-                "call_id": str(call_id),
-                "caller_address": str(caller_addr),
-                "peer_address": str(caller_addr),
-                "media_type": str(media_type),
-                "caller_alias": str(caller_alias or caller_addr),
-                "ts": str(int(time.time())),
-            }
+        data_payload = {
+            "type": "incoming_call",
+            "call_id": str(call_id),
+            "caller_address": str(caller_addr),
+            "peer_address": str(caller_addr),
+            "media_type": str(media_type),
+            "caller_alias": str(caller_alias or caller_addr),
+            "ts": str(int(time.time())),
+        }
 
-            msg = messaging.Message(
-                token=token,
-                data=data_payload,
-                android=messaging.AndroidConfig(
-                    priority="high",
-                    ttl=35,  # 35 seconds TTL
-                ),
-            )
-            resp = messaging.send(msg)
-            log.debug("[fcm_push_call] Call push sent to %s for call %s (msg_id: %s)", callee_addr, call_id, resp)
-            return True
-        except Exception as exc:
-            log.warning("[fcm_push_call] Error sending call push to %s: %s", callee_addr, exc)
-            return False
+        msg = messaging.Message(
+            token=token,
+            data=data_payload,
+            android=messaging.AndroidConfig(
+                priority="high",
+                ttl=35,  # 35 seconds TTL
+            ),
+        )
+        return self._send_message(msg, "fcm_push_call", callee_addr, f"for call {call_id}", sync=sync)
 
-    def send_call_hangup_push(self, callee_addr: str, call_id: str) -> bool:
+    def send_call_hangup_push(self, callee_addr: str, call_id: str, sync: bool = False) -> bool:
         """Dispatches push to dismiss ringing notification when caller hangs up before answer."""
         token = self.get_token(callee_addr)
         if not token or not self._firebase_initialized:
             return False
 
-        try:
-            msg = messaging.Message(
-                token=token,
-                data={
-                    "type": "call_hangup",
-                    "call_id": str(call_id),
-                    "ts": str(int(time.time())),
-                },
-                android=messaging.AndroidConfig(
-                    priority="high",
-                    ttl=10,
-                ),
-            )
-            messaging.send(msg)
-            log.debug("[fcm_push_hangup] Hangup push sent to %s for call %s", callee_addr, call_id)
-            return True
-        except Exception as exc:
-            log.warning("[fcm_push_hangup] Error sending hangup push to %s: %s", callee_addr, exc)
-            return False
+        msg = messaging.Message(
+            token=token,
+            data={
+                "type": "call_hangup",
+                "call_id": str(call_id),
+                "ts": str(int(time.time())),
+            },
+            android=messaging.AndroidConfig(
+                priority="high",
+                ttl=10,
+            ),
+        )
+        return self._send_message(msg, "fcm_push_hangup", callee_addr, f"for call {call_id}", sync=sync)
 
     def send_chat_push(
         self,
@@ -271,36 +295,31 @@ class FCMService:
         ts: int,
         sender_alias: str = "",
         preview: str = "",
+        sync: bool = False,
     ) -> bool:
         """Dispatches wake-up push for new message with direct preview."""
         token = self.get_token(target_addr)
         if not token or not self._firebase_initialized:
             return False
 
-        try:
-            body = str(preview).strip() if preview else "Pesan baru"
-            msg = messaging.Message(
-                token=token,
-                data={
-                    "type": "chat",
-                    "peer_address": str(sender_addr),
-                    "sender_alias": str(sender_alias or sender_addr),
-                    "msg_id": str(msg_id),
-                    "ts": str(ts),
-                    "title": "Pesan Obrolan",
-                    "body": body,
-                },
-                android=messaging.AndroidConfig(
-                    priority="high",
-                    ttl=86400,
-                ),
-            )
-            messaging.send(msg)
-            log.debug("[fcm_push_chat] Chat push sent to %s from %s (mid=%s)", target_addr, sender_addr, msg_id)
-            return True
-        except Exception as exc:
-            log.warning("[fcm_push_chat] Error sending chat push to %s: %s", target_addr, exc)
-            return False
+        body = str(preview).strip() if preview else "Pesan baru"
+        msg = messaging.Message(
+            token=token,
+            data={
+                "type": "chat",
+                "peer_address": str(sender_addr),
+                "sender_alias": str(sender_alias or sender_addr),
+                "msg_id": str(msg_id),
+                "ts": str(ts),
+                "title": "Pesan Obrolan",
+                "body": body,
+            },
+            android=messaging.AndroidConfig(
+                priority="high",
+                ttl=86400,
+            ),
+        )
+        return self._send_message(msg, "fcm_push_chat", target_addr, f"(mid={msg_id})", sync=sync)
 
     def send_tx_push(
         self,
@@ -309,38 +328,33 @@ class FCMService:
         amount_sat: int,
         is_incoming: bool = True,
         sender_addr: str = "",
+        sync: bool = False,
     ) -> bool:
         """Dispatches notification for incoming/outgoing confirmed or pending transaction."""
         token = self.get_token(target_addr)
         if not token or not self._firebase_initialized:
             return False
 
-        try:
-            title = "Koin Diterima" if is_incoming else "Transaksi Terkirim"
-            tsar_amount = amount_sat / 100000000.0
-            body = f"+{tsar_amount:.8f} TSAR" if is_incoming else f"-{tsar_amount:.8f} TSAR"
+        title = "Koin Diterima" if is_incoming else "Transaksi Terkirim"
+        tsar_amount = amount_sat / 100000000.0
+        body = f"+{tsar_amount:.8f} TSAR" if is_incoming else f"-{tsar_amount:.8f} TSAR"
 
-            data_payload = {
-                "type": "tx",
-                "txid": str(txid),
-                "amount": str(amount_sat),
-                "title": title,
-                "body": body,
-            }
-            if sender_addr:
-                data_payload["sender_address"] = str(sender_addr)
+        data_payload = {
+            "type": "tx",
+            "txid": str(txid),
+            "amount": str(amount_sat),
+            "title": title,
+            "body": body,
+        }
+        if sender_addr:
+            data_payload["sender_address"] = str(sender_addr)
 
-            msg = messaging.Message(
-                token=token,
-                data=data_payload,
-                android=messaging.AndroidConfig(
-                    priority="high",
-                    ttl=86400,
-                ),
-            )
-            messaging.send(msg)
-            log.debug("[fcm_push_tx] Tx push sent to %s for txid %s", target_addr, txid)
-            return True
-        except Exception as exc:
-            log.warning("[fcm_push_tx] Error sending tx push to %s: %s", target_addr, exc)
-            return False
+        msg = messaging.Message(
+            token=token,
+            data=data_payload,
+            android=messaging.AndroidConfig(
+                priority="high",
+                ttl=86400,
+            ),
+        )
+        return self._send_message(msg, "fcm_push_tx", target_addr, f"for txid {txid}", sync=sync)

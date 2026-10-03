@@ -202,3 +202,44 @@ def test_fcm_http_endpoints():
         server.server_close()
         if os.path.exists(db_path):
             os.remove(db_path)
+
+
+def test_fcm_async_dispatch_nonblocking():
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+        db_path = tmp.name
+
+    try:
+        fcm = FCMService(db_path=db_path)
+        fcm._firebase_initialized = True
+        addr = "tsar1testaddressforfcmdispatch"
+        fcm._tokens[addr] = {"token": "device_token_xyz"}
+
+        sent_events = []
+        def mock_slow_send(msg):
+            time.sleep(0.15)
+            sent_events.append(msg)
+            return "projects/test/messages/123"
+
+        with patch("firebase_admin.messaging.send", side_effect=mock_slow_send):
+            t0 = time.perf_counter()
+            ok = fcm.send_chat_push(
+                target_addr=addr,
+                sender_addr="tsar1sender",
+                msg_id=12345,
+                ts=int(time.time()),
+                preview="Halo!",
+            )
+            elapsed = time.perf_counter() - t0
+
+            assert ok is True
+            assert elapsed < 0.08, f"send_chat_push blocked for {elapsed:.3f}s"
+
+            fcm.shutdown(wait=True)
+            assert len(sent_events) == 1
+            assert sent_events[0].token == "device_token_xyz"
+            assert sent_events[0].data["msg_id"] == "12345"
+            assert sent_events[0].data["body"] == "Halo!"
+    finally:
+        if os.path.exists(db_path):
+            os.remove(db_path)
+

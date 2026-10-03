@@ -94,7 +94,7 @@ IS_DEV = True  # switch to False for live production nodes
 # When external clients (desktop & mobile wallets) query STOR_LIST, loopback storer IPs
 # are dynamically translated to this address so external wallets can reach the storage node
 # on this server without exposing or breaking internal localhost isolation.
-NODE_PUBLIC_IP  = "38.253.224.105"
+NODE_PUBLIC_IP  = "192.168.1.4"
 
 
 # ---- APP METADATA ----
@@ -168,7 +168,7 @@ FCM_TOKEN_PATH = "data/fcm_tokens.json"
 Set True on new/client nodes to download snapshot (.tar.gz) on startup.
 Set False on seed/VPS/genesis nodes.
 '''
-SNAPSHOT_BOOTSTRAP_ENABLED = True  # allow nodes to bootstrap via snapshot downloads
+SNAPSHOT_BOOTSTRAP_ENABLED = False  # allow nodes to bootstrap via snapshot downloads
 
 
 # ---- SNAPSHOT REMOTE SOURCE & SIGNING ----
@@ -197,7 +197,7 @@ SNAPSHOT_USER_AGENT      = "TsarChainSnapshot/1.0"  # UA string used when fetchi
 Set True on VPS/seed nodes to automatically export & package sub-databases (chain, utxo, state, graffiti, mempool)
 into data/snapshot/tsarchain.tar.gz
 '''
-BACKUP_SNAPSHOT       = False  # True on VPS/Seed node to generate snapshot archives; False on client nodes
+BACKUP_SNAPSHOT       = True  # True on VPS/Seed node to generate snapshot archives; False on client nodes
 
 BLOCK_BACKUP_SNAPSHOT = 20  # Block interval to generate new snapshot archive (e.g. 50-100 for dev test, 1000 for prod)
 SNAPSHOT_BACKUP_DIR   = "data/snapshot"  # folder storing backup snapshots
@@ -388,7 +388,7 @@ STORAGE_PORT_RANGE_DEV  = (39200, 39209)
 STORAGE_PORT_RANGE_PROD = (41200, 41209)
 
 BOOTSTRAP_DEV = (
-    ("38.253.224.105", 38169),
+    ("127.0.0.1", 38169),
 ) # loopback bootstrap peers for development
 
 BOOTSTRAP_PROD = (
