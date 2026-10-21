@@ -103,7 +103,7 @@ def randomx_key_for_height(height: int | None = None) -> bytes:
 
 
 def pow_key_for_height(height: int | None = None) -> bytes:
-    return randomx_key_for_height(height) if CFG.POW_ALGO == "randomx" else b""
+    return randomx_key_for_height(height)
 
 
 def _randomx_hash_core(data: bytes, seed_bytes: bytes, *, full_mem: bool) -> bytes:
@@ -134,8 +134,8 @@ def _resolve_rx_full_mem(full_mem_override: bool | None) -> bool:
 def pow_hash_miner(header: bytes, *, height: int | None = None, key_hint: bytes | None = None, full_mem_override: bool | None = None) -> bytes:
     """Hash for MINING. Can be full-mem according to override/CFG."""
     data = to_bytes(header)
-    if CFG.POW_ALGO != "randomx":
-        return hash256(data)
+
+
     seed = key_hint if key_hint is not None else randomx_key_for_height(height)
     fm = _resolve_rx_full_mem(full_mem_override)
     return _randomx_hash_core(data, bytes(seed), full_mem=fm)
@@ -144,8 +144,8 @@ def pow_hash_miner(header: bytes, *, height: int | None = None, key_hint: bytes 
 def pow_hash_verify_light(header: bytes, *, height: int | None = None, key_hint: bytes | None = None) -> bytes:
     """Hash for VERIFICATION. Always LIGHT (no 2 GB dataset)."""
     data = to_bytes(header)
-    if CFG.POW_ALGO != "randomx":
-        return hash256(data)
+
+
     seed = key_hint if key_hint is not None else randomx_key_for_height(height)
     return _randomx_hash_core(data, bytes(seed), full_mem=False)
 

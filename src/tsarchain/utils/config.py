@@ -63,7 +63,7 @@ Changing them may cause different block/tx validity (hard fork) unless otherwise
    - ENABLE_REORG_LIMIT, REORG_LIMIT
 
   7) POW (RandomX) - CONSENSUS CRITICAL
-   - POW_ALGO, RANDOMX_STATIC_KEY
+   - RANDOMX_STATIC_KEY
    - RANDOMX_KEY_EPOCH_BLOCKS
 
 NOT CONSENSUS (safety differs between nodes):
@@ -306,7 +306,7 @@ MTP_WINDOWS       = 11  # number of blocks in median time past calculation
 
 
 # ---- PROOF OF WORK ----
-POW_ALGO                 = "randomx"
+
 RANDOMX_STATIC_KEY       = "tsar-dev-seed"
 RANDOMX_KEY_SALT         = b"tsar-randomx"
 RANDOMX_KEY_EPOCH_BLOCKS = 128     # rotate RandomX seed every N blocks

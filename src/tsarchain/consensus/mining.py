@@ -35,7 +35,6 @@ class MiningManager:
         miner_address: str,
         use_cores: int | None = None,
         cancel_event: MpEvent | None = None,
-        pow_backend: str = "auto",
         progress_queue: mp.Queue | None = None,
     ) -> Block | None:
 
@@ -60,7 +59,6 @@ class MiningManager:
         found = new_block.mine(
             use_cores=use_cores,
             stop_event=cancel_event,
-            pow_backend=pow_backend,
             progress_queue=progress_queue,
         )
         if not found:

@@ -21,10 +21,6 @@ from kremlin.security.data_security import pubkey_from_privhex, pubkey_to_tsar_a
 
 def _configure_randomx_pow(use_lite: bool, cache_cap: int):
     """Tune RandomX config for tests (default to lite mode)."""
-    algo = str(CFG.POW_ALGO.lower())
-    if algo != "randomx":
-        return
-
     cache_cap = max(1, cache_cap)
     if use_lite:
         CFG.RANDOMX_FULL_MEM = False
@@ -34,7 +30,6 @@ def _configure_randomx_pow(use_lite: bool, cache_cap: int):
         CFG.RANDOMX_FULL_MEM = True
         CFG.RANDOMX_CACHE_MAX = cache_cap
 
-    H._POW_ALGO = (CFG.POW_ALGO or "sha256").lower()
     H._RANDOMX_EPOCH_BLOCKS = max(1, int(CFG.RANDOMX_KEY_EPOCH_BLOCKS))
     H._RANDOMX_SALT = (CFG.RANDOMX_KEY_SALT or "tsar-randomx").decode("utf-8")
     H._RANDOMX_ROOT = H._resolve_randomx_root()

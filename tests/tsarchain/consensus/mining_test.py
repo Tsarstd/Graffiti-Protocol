@@ -167,7 +167,7 @@ def test_mine_block_success(mining_node):
         assert result is mock_block_instance
         mock_block_cls.assert_called_once_with(1, b'prev_hash', [coinbase_mock, tx2, tx1])
         mock_block_instance.mine.assert_called_once_with(
-            use_cores=2, stop_event=None, pow_backend='auto', progress_queue=None
+            use_cores=2, stop_event=None, progress_queue=None
         )
         mining_node.blockchain.validate_block.assert_called_once_with(mock_block_instance)
         mining_node.blockchain.add_block.assert_called_once_with(mock_block_instance)

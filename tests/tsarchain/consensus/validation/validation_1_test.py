@@ -1227,8 +1227,7 @@ def test_validation_pow_warmup_flag():
     block.transactions = [MagicMock()]
     block.header.return_value = b"\x00" * 80
 
-    with patch('tsarchain.consensus.validation.CFG.POW_ALGO', 'randomx'), \
-         patch('tsarchain.utils.helpers.pow_hash_verify_light') as mock_verify:
+    with patch('tsarchain.utils.helpers.pow_hash_verify_light') as mock_verify:
         validator._warm_pow_context = MagicMock()
         validator._ensure_warm = MagicMock()
         validator._validate_pow = MagicMock(return_value=True)

@@ -60,20 +60,18 @@ def mock_block():
 
 @pytest.fixture(autouse=True)
 def mock_randomx(monkeypatch):
-    from tsarchain.consensus.validation import CFG
-    if CFG.POW_ALGO == "randomx":
-        monkeypatch.setattr(
-            "tsarchain.utils.helpers.pow_hash_verify_light",
-            lambda *args, **kwargs: None
-        )
-        monkeypatch.setattr(
-            "tsarchain.utils.helpers.pow_key_for_height",
-            lambda h: b"dummy_key"
-        )
-        monkeypatch.setattr(
-            "tsarchain.utils.helpers.pow_hash_verify_light",
-            lambda *args, **kwargs: b"dummy_hash"
-        )
+    monkeypatch.setattr(
+        "tsarchain.utils.helpers.pow_hash_verify_light",
+        lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        "tsarchain.utils.helpers.pow_key_for_height",
+        lambda h: b"dummy_key"
+    )
+    monkeypatch.setattr(
+        "tsarchain.utils.helpers.pow_hash_verify_light",
+        lambda *args, **kwargs: b"dummy_hash"
+    )
 
 @pytest.fixture
 def mock_tx():
@@ -137,16 +135,7 @@ class TestValidationMixin:
     # -------------------------------------------------------------------
 
     @patch("tsarchain.consensus.validation.CFG")
-    def test_ensure_warm_not_randomx(self, mock_cfg):
-        instance = self.create_instance()
-        mock_cfg.POW_ALGO = "sha256"
-        with patch("tsarchain.consensus.validation.H") as mock_H:
-            instance._ensure_warm(100)
-            mock_H.pow_hash_verify_light.assert_not_called()
-
-    @patch("tsarchain.consensus.validation.CFG")
     def test_ensure_warm_epoch_already_warmed(self, mock_cfg):
-        mock_cfg.POW_ALGO = "randomx"
         mock_cfg.RANDOMX_KEY_EPOCH_BLOCKS = 100
         instance = self.create_instance()
         instance.validator.__class__._pow_epoch_warmed = set([0])
@@ -157,7 +146,6 @@ class TestValidationMixin:
 
     @patch("tsarchain.consensus.validation.CFG")
     def test_ensure_warm_calls_pow_hash(self, mock_cfg):
-        mock_cfg.POW_ALGO = "randomx"
         mock_cfg.RANDOMX_KEY_EPOCH_BLOCKS = 100
         instance = self.create_instance()
         instance.validator.__class__._pow_epoch_warmed = set()
@@ -175,16 +163,7 @@ class TestValidationMixin:
 
     @patch("tsarchain.consensus.validation.CFG")
     @patch("tsarchain.consensus.validation.threading.Thread")
-    def test_warm_pow_context_not_randomx(self, mock_thread, mock_cfg):
-        mock_cfg.POW_ALGO = "sha256"
-        instance = self.create_instance()
-        instance._warm_pow_context(100)
-        mock_thread.assert_not_called()
-
-    @patch("tsarchain.consensus.validation.CFG")
-    @patch("tsarchain.consensus.validation.threading.Thread")
     def test_warm_pow_context_already_scheduled(self, mock_thread, mock_cfg):
-        mock_cfg.POW_ALGO = "randomx"
         mock_cfg.RANDOMX_KEY_EPOCH_BLOCKS = 100
         instance = self.create_instance()
         BlockValidator._pow_warm_next_epoch = 2
@@ -210,7 +189,6 @@ class TestValidationMixin:
 
     @patch("tsarchain.consensus.validation.CFG")
     def test_validate_block_success(self, mock_cfg):
-        mock_cfg.POW_ALGO = "randomx"
         mock_cfg.DEBUG_BENCHMARKS = False
         instance = self.create_instance()
         block = Mock()
@@ -227,7 +205,6 @@ class TestValidationMixin:
 
     @patch("tsarchain.consensus.validation.CFG")
     def test_validate_block_pow_invalid(self, mock_cfg):
-        mock_cfg.POW_ALGO = "randomx"
         mock_cfg.DEBUG_BENCHMARKS = False
         instance = self.create_instance()
         block = Mock()
@@ -245,7 +222,6 @@ class TestValidationMixin:
 
     @patch("tsarchain.consensus.validation.CFG")
     def test_validate_block_compute_txids_fails(self, mock_cfg):
-        mock_cfg.POW_ALGO = "randomx"
         mock_cfg.DEBUG_BENCHMARKS = False
         instance = self.create_instance()
         block = Mock()
@@ -264,7 +240,6 @@ class TestValidationMixin:
 
     @patch("tsarchain.consensus.validation.CFG")
     def test_validate_block_merkle_mismatch(self, mock_cfg):
-        mock_cfg.POW_ALGO = "randomx"
         mock_cfg.DEBUG_BENCHMARKS = False
         instance = self.create_instance()
         block = Mock()
@@ -282,7 +257,6 @@ class TestValidationMixin:
 
     @patch("tsarchain.consensus.validation.CFG")
     def test_validate_block_duplicate_txid(self, mock_cfg):
-        mock_cfg.POW_ALGO = "randomx"
         mock_cfg.DEBUG_BENCHMARKS = False
         instance = self.create_instance()
         block = Mock()
@@ -301,7 +275,6 @@ class TestValidationMixin:
 
     @patch("tsarchain.consensus.validation.CFG")
     def test_validate_block_block_limits_exceeded(self, mock_cfg):
-        mock_cfg.POW_ALGO = "randomx"
         mock_cfg.DEBUG_BENCHMARKS = False
         instance = self.create_instance()
         block = Mock()
@@ -319,7 +292,6 @@ class TestValidationMixin:
 
     @patch("tsarchain.consensus.validation.CFG")
     def test_validate_block_chain_context_invalid(self, mock_cfg):
-        mock_cfg.POW_ALGO = "randomx"
         mock_cfg.DEBUG_BENCHMARKS = False
         instance = self.create_instance()
         block = Mock()
@@ -338,7 +310,6 @@ class TestValidationMixin:
 
     @patch("tsarchain.consensus.validation.CFG")
     def test_validate_block_sigops_limit_exceeded(self, mock_cfg):
-        mock_cfg.POW_ALGO = "randomx"
         mock_cfg.DEBUG_BENCHMARKS = False
         instance = self.create_instance()
         block = Mock()
@@ -357,7 +328,6 @@ class TestValidationMixin:
 
     @patch("tsarchain.consensus.validation.CFG")
     def test_validate_block_transactions_fail(self, mock_cfg):
-        mock_cfg.POW_ALGO = "randomx"
         mock_cfg.DEBUG_BENCHMARKS = False
         instance = self.create_instance()
         block = Mock()
@@ -380,7 +350,6 @@ class TestValidationMixin:
 
     @patch("tsarchain.consensus.validation.CFG")
     def test_validate_block_state_changed(self, mock_cfg):
-        mock_cfg.POW_ALGO = "randomx"
         mock_cfg.DEBUG_BENCHMARKS = False
         instance = self.create_instance()
         block = Mock()
@@ -408,7 +377,6 @@ class TestValidationMixin:
 
     @patch("tsarchain.consensus.validation.CFG")
     def test_validate_block_unexpected_exception(self, mock_cfg):
-        mock_cfg.POW_ALGO = "randomx"
         mock_cfg.DEBUG_BENCHMARKS = False
         instance = self.create_instance()
         block = Mock()
@@ -431,7 +399,6 @@ class TestValidationMixin:
 
     @patch("tsarchain.consensus.validation.CFG")
     def test_validate_transactions_empty_txs(self, mock_cfg):
-        mock_cfg.POW_ALGO = "randomx"
         instance = self.create_instance()
         block = Mock()
         block.transactions = []
@@ -442,7 +409,6 @@ class TestValidationMixin:
 
     @patch("tsarchain.consensus.validation.CFG")
     def test_validate_transactions_missing_coinbase(self, mock_cfg):
-        mock_cfg.POW_ALGO = "randomx"
         instance = self.create_instance()
         tx = Mock()
         tx.is_coinbase = False
@@ -455,7 +421,6 @@ class TestValidationMixin:
 
     @patch("tsarchain.consensus.validation.CFG")
     def test_validate_transactions_duplicate_coinbase(self, mock_cfg):
-        mock_cfg.POW_ALGO = "randomx"
         instance = self.create_instance()
         cb = Mock()
         cb.is_coinbase = True
@@ -471,7 +436,6 @@ class TestValidationMixin:
     @patch("tsarchain.consensus.validation.CFG")
     @patch("tsarchain.consensus.validation.H")
     def test_validate_transactions_serialize_fails(self, mock_H, mock_cfg):
-        mock_cfg.POW_ALGO = "randomx"
         instance = self.create_instance()
         cb = Mock()
         cb.is_coinbase = True

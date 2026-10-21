@@ -153,7 +153,7 @@ class ChainStorage:
             "tip_height": int(tip_height),
             "tip_hash": tip_hash,
             "network_id": CFG.DEFAULT_NET_ID,
-            "pow_algo": CFG.POW_ALGO,
+            "pow_algo": "randomx",
             "max_bits": int(CFG.MAX_BITS),
             "target_block_time_sec": int(CFG.TARGET_BLOCK_TIME),
             "blocks": int(tip_height + 1 if tip_height >= 0 else 0),
@@ -599,7 +599,7 @@ class ChainStorage:
                 "network_id": CFG.DEFAULT_NET_ID,
                 "address_prefix": CFG.ADDRESS_PREFIX,
                 "network_magic_hex": CFG.NETWORK_MAGIC.hex(),
-                "pow_algo": CFG.POW_ALGO,
+                "pow_algo": "randomx",
             },
             "chain": {
                 "total_blocks": chain_stats["total_blocks"],

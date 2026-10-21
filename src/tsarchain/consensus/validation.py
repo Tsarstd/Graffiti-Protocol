@@ -55,7 +55,7 @@ class BlockValidator:
             self._warm_pow_context(b_height)
             self._ensure_warm(b_height)
 
-            if not self.__class__._pow_light_warmed and CFG.POW_ALGO == "randomx":
+            if not self.__class__._pow_light_warmed:
                 H.pow_hash_verify_light(block.header(), height=block.height)
                 self.__class__._pow_light_warmed = True
 
@@ -126,8 +126,6 @@ class BlockValidator:
     # =============================================================================
 
     def _warm_pow_context(self, height: int):
-        if CFG.POW_ALGO != "randomx":
-            return
         epoch_blocks = max(1, int(CFG.RANDOMX_KEY_EPOCH_BLOCKS))
         next_epoch = (height // epoch_blocks) + 1
         with self._pow_warm_lock:
@@ -144,8 +142,6 @@ class BlockValidator:
 
 
     def _ensure_warm(self, height: int):
-        if CFG.POW_ALGO != "randomx":
-            return
         epoch_blocks = max(1, int(CFG.RANDOMX_KEY_EPOCH_BLOCKS))
         epoch = max(0, int(height) // epoch_blocks)
         with self._pow_warm_lock:

@@ -325,14 +325,12 @@ class Blockchain():
         miner_address: str,
         use_cores: int | None = None,
         cancel_event: MpEvent | None = None,
-        pow_backend: str = "auto",
         progress_queue: mp.Queue | None = None,
     ) -> Block | None:
         return self.mining_manager.mine_block(
             miner_address,
             use_cores=use_cores,
             cancel_event=cancel_event,
-            pow_backend=pow_backend,
             progress_queue=progress_queue,
         )
 

@@ -229,7 +229,7 @@ class Block:
         self._cached_hash_prev = self.prev_block_hash
         return h
 
-    def mine(self, use_cores: int = None, stop_event: Optional[MpEvent] = None, pow_backend: str = "auto", progress_queue: Optional[mp.Queue] = None):
+    def mine(self, use_cores: int | None = None, stop_event: Optional[MpEvent] = None, progress_queue: Optional[mp.Queue] = None):
         self.nonce = 0
         if stop_event is not None and stop_event.is_set():
             return None
@@ -240,14 +240,6 @@ class Block:
         target = bits_to_target(self.bits)
         if target <= 0:
             return None
-
-        default_backend = (CFG.POW_ALGO or "randomx").strip().lower()
-        requested = (pow_backend or "auto").strip().lower()
-        backend = requested if requested not in ("", "auto") else default_backend
-        if backend in ("", "auto"):
-            backend = "randomx"
-        if backend != "randomx":
-            raise RuntimeError(f"Unsupported PoW backend '{backend}'. Only RandomX is available.")
 
         pow_key = pow_key_for_height(self.height)
         if not pow_key:

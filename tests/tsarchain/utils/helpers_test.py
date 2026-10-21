@@ -119,7 +119,6 @@ def test_parse_ops():
 
 def test_randomx_helpers():
     with patch("tsarchain.utils.helpers.CFG") as mock_cfg:
-        mock_cfg.POW_ALGO = "randomx"
         mock_cfg.RANDOMX_KEY_EPOCH_BLOCKS = 100
         mock_cfg.RANDOMX_KEY_SALT = b"salt"
         mock_cfg.RANDOMX_STATIC_KEY = "test"
@@ -215,7 +214,6 @@ def test_native_randomx_mine(m):
 @patch("tsarchain.utils.helpers._native_randomx_hash", return_value=b"hash")
 def test_pow_hashes(m_hash):
     with patch("tsarchain.utils.helpers.CFG") as m_cfg:
-        m_cfg.POW_ALGO = "randomx"
         m_cfg.RANDOMX_KEY_SALT = b"salt"
         m_cfg.RANDOMX_KEY_EPOCH_BLOCKS = 100
         assert pow_hash_miner(b"h") == b"hash"

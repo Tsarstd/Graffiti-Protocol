@@ -237,20 +237,8 @@ def test_block_mine(mock_verify, mock_native, mock_key, mock_target, mock_cpu, m
     mock_target.return_value = 0
     assert b.mine(stop_event=stop_event) is None
     
-    # Backend auto covering line 220 (where backend="auto" -> "randomx")
-    monkeypatch.setattr(CFG, "POW_ALGO", "auto")
-    mock_target.return_value = 100
-    mock_key.return_value = b"key"
-    mock_native.return_value = (123, b"mined_hash")
-    mock_verify.return_value = b"mined_hash"
-    assert b.mine(pow_backend="") == b"mined_hash"
-    
-    # Backend invalid
-    mock_target.return_value = 100
-    with pytest.raises(RuntimeError, match="Unsupported PoW backend"):
-        b.mine(pow_backend="sha256")
-        
     # No pow key
+    mock_target.return_value = 100
     mock_key.return_value = None
     with pytest.raises(RuntimeError, match="RandomX key derivation failed"):
         b.mine()

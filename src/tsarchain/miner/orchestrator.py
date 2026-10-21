@@ -235,7 +235,6 @@ class SimpleMiner:
             miner_address=self.address,
             use_cores=self.cores,
             cancel_event=evt,
-            pow_backend="randomx",
             progress_queue=self._progress_q,
         )
         result["block"] = blk
