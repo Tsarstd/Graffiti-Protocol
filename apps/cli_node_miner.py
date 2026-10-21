@@ -120,7 +120,7 @@ def choose_mode() -> int:
     console.print("[bold green]✓ Selected Mode: Mining Mode (0)[/bold green]\n")
     return 0
 
-        
+
 def parse_args():
     parser = argparse.ArgumentParser(description="TsarChain CLI miner / node runner")
     parser.add_argument("--init-genesis", action="store_true", help="Mine and lock Genesis Block (Block 0) if database is empty")
@@ -136,97 +136,79 @@ def parse_args():
     return parser.parse_args()
 
 
-def main():
+def run_init_genesis(args, is_interactive: bool) -> None:
+    clog("Checking Genesis status in LMDB database...", COL.CYAN)
+    from tsarchain.consensus.blockchain import Blockchain
+    bc = Blockchain()
+    if len(bc.chain) > 0:
+        g_hash = bc.chain[0].hash().hex()
+        clog(f"Genesis Block already exists in LMDB! Hash: {g_hash}", COL.GREEN)
+        clog("No need to run --init-genesis again.", COL.YELLOW)
+        bc.shutdown()
+        sys.exit(0)
+
+    address = args.address
+    cores = args.cores
+    if not address or not cores:
+        if not is_interactive:
+            clog("Error: --address and --cores are required for --init-genesis in non-interactive mode.", COL.RED)
+            bc.shutdown()
+            sys.exit(2)
+        input_address, input_cores = COL.get_user_input()
+        address = address or input_address
+        cores = cores or input_cores
+
+    cores = _normalize_cores(cores)
+    clog(f"Mining Genesis Block (Block 0) for address '{address}' with {cores} core(s)...", COL.CYAN)
+    success = bc.ensure_genesis(address, use_cores=cores, init_genesis=True)
+    if success and len(bc.chain) > 0:
+        g = bc.chain[0]
+        clog("================================================================", COL.YELLOW)
+        clog("Genesis Block created & locked in LMDB successfully!", COL.GREEN)
+        clog(f"Hash      : {g.hash().hex()}", COL.GREEN)
+        clog(f"Height    : {g.height}", COL.GREEN)
+        clog(f"PrevHash  : {g.prev_block_hash.hex()}", COL.GREEN)
+        clog(f"Nonce     : {g.nonce}", COL.GREEN)
+        clog(f"Timestamp : {g.timestamp}", COL.GREEN)
+        clog("================================================================", COL.YELLOW)
+        clog("Environment ready! You can now start the node or miner in normal mode.", COL.CYAN)
+        kv.sync(force=True)
+        bc.shutdown()
+        sys.exit(0)
+    else:
+        clog("Failed to create Genesis Block!", COL.RED)
+        bc.shutdown()
+        sys.exit(1)
+
+
+def run_node_only(args) -> None:
     global tui_logger
-    _enable_windows_vt100()
-    args = parse_args()
-    set_clog_func(clog)
+    runner = NodeRunner(bootstrap_snapshot=not args.no_bootstrap)
+    tui = MinerTUI(
+        address="Node Only",
+        cores=0,
+        mode=" Node Only",
+        randomx_mode=" Disabled",
+        hashrate_queue=None,
+        chain_height_fn=lambda: int(runner.blockchain.height) if runner.blockchain else -1,
+        peer_counts_fn=lambda: _safe_peer_counts(runner.network),
+        mempool_count_fn=lambda: _safe_mempool_count(runner),
+        node_only=True,
+    )
+    tui.start()
+    tui_logger = create_tui_logger(tui)
 
-    if args.thread_report:
-        show_thread_report()
-        return
+    try:
+        runner.start()
+    except KeyboardInterrupt:
+        clog("Interrupted by user")
+    finally:
+        tui.stop()
+        tui_logger = None
 
-    is_interactive = sys.stdin.isatty() and not args.yes
-    is_fully_configured = bool(args.address and args.cores)
 
-    if args.init_genesis:
-        clog("Checking Genesis status in LMDB database...", COL.CYAN)
-        from tsarchain.consensus.blockchain import Blockchain
-        bc = Blockchain()
-        if len(bc.chain) > 0:
-            g_hash = bc.chain[0].hash().hex()
-            clog(f"Genesis Block already exists in LMDB! Hash: {g_hash}", COL.GREEN)
-            clog("No need to run --init-genesis again.", COL.YELLOW)
-            bc.shutdown()
-            sys.exit(0)
-
-        address = args.address
-        cores = args.cores
-        if not address or not cores:
-            if not is_interactive:
-                clog("Error: --address and --cores are required for --init-genesis in non-interactive mode.", COL.RED)
-                bc.shutdown()
-                sys.exit(2)
-            input_address, input_cores = COL.get_user_input()
-            address = address or input_address
-            cores = cores or input_cores
-
-        cores = _normalize_cores(cores)
-        clog(f"Mining Genesis Block (Block 0) for address '{address}' with {cores} core(s)...", COL.CYAN)
-        success = bc.ensure_genesis(address, use_cores=cores, init_genesis=True)
-        if success and len(bc.chain) > 0:
-            g = bc.chain[0]
-            clog("================================================================", COL.YELLOW)
-            clog("Genesis Block created & locked in LMDB successfully!", COL.GREEN)
-            clog(f"Hash      : {g.hash().hex()}", COL.GREEN)
-            clog(f"Height    : {g.height}", COL.GREEN)
-            clog(f"PrevHash  : {g.prev_block_hash.hex()}", COL.GREEN)
-            clog(f"Nonce     : {g.nonce}", COL.GREEN)
-            clog(f"Timestamp : {g.timestamp}", COL.GREEN)
-            clog("================================================================", COL.YELLOW)
-            clog("Environment ready! You can now start the node or miner in normal mode.", COL.CYAN)
-            kv.sync(force=True)
-            bc.shutdown()
-            sys.exit(0)
-        else:
-            clog("Failed to create Genesis Block!", COL.RED)
-            bc.shutdown()
-            sys.exit(1)
-    
-    mode_selected = None
-    if not args.node_only:
-        if is_interactive and not is_fully_configured:
-            COL.print_banner()
-            COL.print_system_snapshot(cores_hint=None)
-            mode_selected = choose_mode()
-        else:
-            mode_selected = 0  # Default to mining mode when non-interactive or fully configured via CLI
-
-    if args.node_only or mode_selected == 1:
-        runner = NodeRunner(bootstrap_snapshot=not args.no_bootstrap)
-        tui = MinerTUI(
-            address="Node Only",
-            cores=0,
-            mode=" Node Only",
-            randomx_mode=" Disabled",
-            hashrate_queue=None,
-            chain_height_fn=lambda: int(runner.blockchain.height) if runner.blockchain else -1,
-            peer_counts_fn=lambda: _safe_peer_counts(runner.network),
-            mempool_count_fn=lambda: _safe_mempool_count(runner),
-            node_only=True,
-        )
-        tui.start()
-        tui_logger = create_tui_logger(tui)
-
-        try:
-            runner.start()
-        except KeyboardInterrupt:
-            clog("Interrupted by user")
-        finally:
-            tui.stop()
-            tui_logger = None
-        return
-
+def run_miner(args, is_interactive: bool, is_fully_configured: bool) -> None:
+    global tui_logger
     address = args.address
     cores = args.cores
 
@@ -260,7 +242,7 @@ def main():
 
     # --- TUI + progress queue ---
     progress_q: mp.Queue = mp.Queue()
-    
+
     miner = SimpleMiner(
         address=address,
         cores=cores,
@@ -278,11 +260,10 @@ def main():
         peer_counts_fn=lambda: _safe_peer_counts(miner.network),
         mempool_count_fn=lambda: _safe_mempool_count(miner),
     )
-    
+
     miner.tui = tui
     tui.start()
     tui_logger = create_tui_logger(tui)
-
 
     try:
         miner.start_mining(timeout=args.timeout)
@@ -294,6 +275,37 @@ def main():
         miner.stop()
         tui.stop()
         tui_logger = None
+
+
+def main():
+    _enable_windows_vt100()
+    args = parse_args()
+    set_clog_func(clog)
+
+    if args.thread_report:
+        show_thread_report()
+        return
+
+    is_interactive = sys.stdin.isatty() and not args.yes
+    is_fully_configured = bool(args.address and args.cores)
+
+    if args.init_genesis:
+        run_init_genesis(args, is_interactive)
+        return
+
+    if args.node_only:
+        mode = 1
+    elif is_interactive and not is_fully_configured:
+        COL.print_banner()
+        COL.print_system_snapshot(cores_hint=None)
+        mode = choose_mode()
+    else:
+        mode = 0  # Default to mining mode when non-interactive or fully configured via CLI
+
+    if mode == 1:
+        run_node_only(args)
+    else:
+        run_miner(args, is_interactive, is_fully_configured)
 
 
 if __name__ == "__main__":

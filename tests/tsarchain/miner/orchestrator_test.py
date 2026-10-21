@@ -406,3 +406,77 @@ def test_simple_miner_abort_on_tip_changed():
         assert miner.abort_block_mining.is_set() is False
         miner._on_tip_changed(10, "0000hash")
         assert miner.abort_block_mining.is_set() is True
+
+
+def test_cli_main_dispatches_node_only():
+    """Verify main() routes to run_node_only when --node-only is passed."""
+    import sys, os
+    apps_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    if apps_dir not in sys.path:
+        sys.path.insert(0, apps_dir)
+    from apps import cli_node_miner
+
+    with patch.object(cli_node_miner, "parse_args") as mock_parse, \
+         patch.object(cli_node_miner, "run_node_only") as mock_node_only, \
+         patch.object(cli_node_miner, "run_miner") as mock_miner:
+        mock_parse.return_value = MagicMock(
+            thread_report=False,
+            init_genesis=False,
+            node_only=True,
+            yes=True,
+            address=None,
+            cores=None,
+        )
+        cli_node_miner.main()
+        mock_node_only.assert_called_once()
+        mock_miner.assert_not_called()
+
+
+def test_cli_main_dispatches_mining():
+    """Verify main() routes to run_miner when --node-only is not passed."""
+    import sys, os
+    apps_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    if apps_dir not in sys.path:
+        sys.path.insert(0, apps_dir)
+    from apps import cli_node_miner
+
+    with patch.object(cli_node_miner, "parse_args") as mock_parse, \
+         patch.object(cli_node_miner, "run_node_only") as mock_node_only, \
+         patch.object(cli_node_miner, "run_miner") as mock_miner:
+        mock_parse.return_value = MagicMock(
+            thread_report=False,
+            init_genesis=False,
+            node_only=False,
+            yes=True,
+            address="tsar1qtest",
+            cores=2,
+        )
+        cli_node_miner.main()
+        mock_miner.assert_called_once()
+        mock_node_only.assert_not_called()
+
+
+def test_cli_main_dispatches_init_genesis():
+    """Verify main() routes to run_init_genesis when --init-genesis is passed."""
+    import sys, os
+    apps_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    if apps_dir not in sys.path:
+        sys.path.insert(0, apps_dir)
+    from apps import cli_node_miner
+
+    with patch.object(cli_node_miner, "parse_args") as mock_parse, \
+         patch.object(cli_node_miner, "run_init_genesis") as mock_genesis, \
+         patch.object(cli_node_miner, "run_node_only") as mock_node_only, \
+         patch.object(cli_node_miner, "run_miner") as mock_miner:
+        mock_parse.return_value = MagicMock(
+            thread_report=False,
+            init_genesis=True,
+            node_only=False,
+            yes=True,
+            address=None,
+            cores=None,
+        )
+        cli_node_miner.main()
+        mock_genesis.assert_called_once()
+        mock_node_only.assert_not_called()
+        mock_miner.assert_not_called()
