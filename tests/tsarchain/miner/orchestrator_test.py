@@ -11,9 +11,6 @@ from unittest.mock import MagicMock, patch
 from tsarchain.miner.orchestrator import (
     SimpleMiner, 
     NodeRunner, 
-    _stamp, 
-    set_clog_func, 
-    clog,
     _enable_siginterrupt, 
     _register_bootstrap_peers,
     _run_snapshot_bootstrap,
@@ -40,20 +37,24 @@ def mock_blockchain_cls():
 
 # --- Helper Functions Tests ---
 
-def test_stamp():
-    s = _stamp()
-    assert isinstance(s, str)
-    assert "." in s
-
-def test_clog_custom_func():
+def test_miner_custom_log_fn():
     out = []
-    def my_clog(msg, color):
-        out.append((msg, color))
-    set_clog_func(my_clog)
-    clog("test message", "red")
-    assert len(out) == 1
-    assert out[0] == ("test message", "red")
-    set_clog_func(None)  # Reset to default
+    miner = SimpleMiner(
+        address="tsar1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+        cores=1,
+        log_fn=lambda msg, col: out.append((msg, col)),
+    )
+    miner.log_fn("miner message", "green")
+    assert out == [("miner message", "green")]
+
+def test_noderunner_custom_log_fn():
+    out = []
+    runner = NodeRunner(
+        bootstrap_snapshot=False,
+        log_fn=lambda msg, col: out.append((msg, col)),
+    )
+    runner.log_fn("runner message", "blue")
+    assert out == [("runner message", "blue")]
 
 def test_enable_siginterrupt():
     # Calling this should not raise any exceptions
@@ -73,11 +74,11 @@ def test_register_bootstrap_peers(mock_config):
 @patch("tsarchain.miner.orchestrator.maybe_bootstrap_snapshot")
 def test_run_snapshot_bootstrap(mock_maybe_bootstrap):
     mock_maybe_bootstrap.return_value = MagicMock(status="installed", reason="")
-    res = _run_snapshot_bootstrap(True)
+    res = _run_snapshot_bootstrap(True, log_fn=MagicMock())
     assert res.status == "installed"
     
     # If disabled, should return None
-    res_false = _run_snapshot_bootstrap(False)
+    res_false = _run_snapshot_bootstrap(False, log_fn=MagicMock())
     assert res_false is None
 
 
@@ -86,20 +87,20 @@ def test_run_snapshot_bootstrap(mock_maybe_bootstrap):
 @pytest.fixture
 def miner():
     # Using a valid length tsarchain address
-    return SimpleMiner("tsar1" + "a" * 24, cores=1, bootstrap_snapshot=False)
+    return SimpleMiner("tsar1" + "a" * 24, cores=1, bootstrap_snapshot=False, log_fn=MagicMock())
 
 def test_miner_validate_address():
-    m_invalid = SimpleMiner("invalid_addr", 1)
-    assert m_invalid.validate_address() is False
+    m_invalid = SimpleMiner("invalid_addr", 1, log_fn=MagicMock())
+    assert m_invalid._validate_address() is False
     
-    m_valid = SimpleMiner("tsar1" + "a" * 24, 1)
-    assert m_valid.validate_address() is True
+    m_valid = SimpleMiner("tsar1" + "a" * 24, 1, log_fn=MagicMock())
+    assert m_valid._validate_address() is True
 
 def test_miner_signal_handler(miner):
     assert miner.mining_alive is True
     assert not miner.cancel_mining.is_set()
     
-    miner.signal_handler(signal.SIGINT, None)
+    miner._signal_handler(signal.SIGINT, None)
     
     assert miner.mining_alive is False
     assert miner.cancel_mining.is_set()
@@ -139,7 +140,7 @@ def test_miner_has_active_peers(miner):
     assert miner._has_active_peers() is True
 
 def test_miner_start_node(miner, mock_network_cls, mock_blockchain_cls):
-    res = miner.start_node()
+    res = miner._start_node()
     assert res is True
     assert miner.blockchain is not None
     assert miner.network is not None
@@ -151,7 +152,7 @@ def test_miner_wait_for_sync_timeout(mock_sleep, miner, mock_network_cls):
     miner._trusted_best_height = MagicMock(return_value=10)
     
     # timeout immediately
-    res = miner.wait_for_sync(timeout=0)
+    res = miner._wait_for_sync(timeout=0)
     assert res is False
 
 @patch("tsarchain.miner.orchestrator.time.sleep", return_value=None)
@@ -163,7 +164,7 @@ def test_miner_wait_for_sync_success(mock_sleep, miner, mock_network_cls):
     miner._trusted_tip_hash = MagicMock(return_value="abc")
     
     # The loop should break returning True when height >= trusted_best_height
-    res = miner.wait_for_sync(timeout=10)
+    res = miner._wait_for_sync(timeout=10)
     assert res is True
 
 def test_miner_stop(miner):
@@ -181,16 +182,16 @@ def test_miner_stop(miner):
 # --- NodeRunner Tests ---
 
 def test_noderunner_init():
-    nr = NodeRunner()
+    nr = NodeRunner(log_fn=MagicMock())
     assert nr.running is True
 
 def test_noderunner_handle_signal():
-    nr = NodeRunner()
+    nr = NodeRunner(log_fn=MagicMock())
     nr._handle_signal(signal.SIGINT, None)
     assert nr.running is False
 
 def test_noderunner_has_active_peers():
-    nr = NodeRunner()
+    nr = NodeRunner(log_fn=MagicMock())
     assert nr._has_active_peers() is False
     
     nr.network = MagicMock()
@@ -199,7 +200,7 @@ def test_noderunner_has_active_peers():
 
 @patch("tsarchain.miner.orchestrator.time.sleep")
 def test_noderunner_start(mock_sleep, mock_network_cls, mock_blockchain_cls):
-    nr = NodeRunner(bootstrap_snapshot=False)
+    nr = NodeRunner(bootstrap_snapshot=False, log_fn=MagicMock())
     
     # We want to kill the infinite while-loop after the first sleep
     def sleep_side_effect(*args, **kwargs):
@@ -218,7 +219,7 @@ def test_noderunner_start(mock_sleep, mock_network_cls, mock_blockchain_cls):
 
 @patch("tsarchain.miner.orchestrator.time.sleep")
 def test_noderunner_sync_daemon(mock_sleep):
-    nr = NodeRunner()
+    nr = NodeRunner(log_fn=MagicMock())
     nr.running = True
     nr.blockchain = MagicMock(height=5)
     nr.network = MagicMock()
@@ -241,17 +242,17 @@ def test_miner_start_mining_invalid_address(miner):
     miner.address = "invalid"
     assert miner.start_mining() is False
 
-@patch.object(SimpleMiner, 'start_node', return_value=False)
+@patch.object(SimpleMiner, '_start_node', return_value=False)
 def test_miner_start_mining_start_node_fails(mock_start, miner):
     assert miner.start_mining() is False
 
-@patch.object(SimpleMiner, 'start_node', return_value=True)
-@patch.object(SimpleMiner, 'wait_for_sync', return_value=False)
+@patch.object(SimpleMiner, '_start_node', return_value=True)
+@patch.object(SimpleMiner, '_wait_for_sync', return_value=False)
 def test_miner_start_mining_sync_fails(mock_sync, mock_start, miner):
     assert miner.start_mining() is False
 
-@patch.object(SimpleMiner, 'start_node', return_value=True)
-@patch.object(SimpleMiner, 'wait_for_sync', return_value=True)
+@patch.object(SimpleMiner, '_start_node', return_value=True)
+@patch.object(SimpleMiner, '_wait_for_sync', return_value=True)
 def test_miner_start_mining_genesis_fails(mock_sync, mock_start, miner, mock_blockchain_cls):
     # Simulate height < 0 and genesis fails
     miner.blockchain = mock_blockchain_cls.return_value
@@ -260,8 +261,8 @@ def test_miner_start_mining_genesis_fails(mock_sync, mock_start, miner, mock_blo
     
     assert miner.start_mining() is False
 
-@patch.object(SimpleMiner, 'start_node', return_value=True)
-@patch.object(SimpleMiner, 'wait_for_sync', return_value=True)
+@patch.object(SimpleMiner, '_start_node', return_value=True)
+@patch.object(SimpleMiner, '_wait_for_sync', return_value=True)
 def test_miner_start_mining_behind_trusted(mock_sync, mock_start, miner, mock_blockchain_cls):
     miner.blockchain = mock_blockchain_cls.return_value
     miner.blockchain.height = 1
@@ -280,8 +281,8 @@ def test_miner_start_mining_behind_trusted(mock_sync, mock_start, miner, mock_bl
         
     assert mock_sleep.called
 
-@patch.object(SimpleMiner, 'start_node', return_value=True)
-@patch.object(SimpleMiner, 'wait_for_sync', return_value=True)
+@patch.object(SimpleMiner, '_start_node', return_value=True)
+@patch.object(SimpleMiner, '_wait_for_sync', return_value=True)
 def test_miner_start_mining_hash_mismatch(mock_sync, mock_start, miner, mock_blockchain_cls):
     miner.blockchain = mock_blockchain_cls.return_value
     miner.blockchain.height = 1
@@ -308,7 +309,7 @@ def test_miner_sigint_stops_tui(miner):
     miner.thread_monitor = MagicMock()
     
     # Trigger signal handler logic
-    with patch.object(miner, "signal_handler") as mock_handler:
+    with patch.object(miner, "_signal_handler") as mock_handler:
         # Call the sigint handler registered on miner init
         handler = signal.getsignal(signal.SIGINT)
         if callable(handler):
@@ -402,7 +403,7 @@ def test_simple_miner_abort_on_tip_changed():
     from tsarchain.miner.orchestrator import SimpleMiner
     with patch('tsarchain.miner.orchestrator.signal.signal'), \
          patch('tsarchain.miner.orchestrator.register_thread_monitoring_signal'):
-        miner = SimpleMiner(address="tsar1qtest", cores=1)
+        miner = SimpleMiner(address="tsar1qtest", cores=1, log_fn=MagicMock())
         assert miner.abort_block_mining.is_set() is False
         miner._on_tip_changed(10, "0000hash")
         assert miner.abort_block_mining.is_set() is True
@@ -416,9 +417,9 @@ def test_cli_main_dispatches_node_only():
         sys.path.insert(0, apps_dir)
     from apps import cli_node_miner
 
-    with patch.object(cli_node_miner, "parse_args") as mock_parse, \
-         patch.object(cli_node_miner, "run_node_only") as mock_node_only, \
-         patch.object(cli_node_miner, "run_miner") as mock_miner:
+    with patch.object(cli_node_miner, "_parse_args") as mock_parse, \
+         patch.object(cli_node_miner, "_run_node_only") as mock_node_only, \
+         patch.object(cli_node_miner, "_run_miner") as mock_miner:
         mock_parse.return_value = MagicMock(
             thread_report=False,
             init_genesis=False,
@@ -440,9 +441,9 @@ def test_cli_main_dispatches_mining():
         sys.path.insert(0, apps_dir)
     from apps import cli_node_miner
 
-    with patch.object(cli_node_miner, "parse_args") as mock_parse, \
-         patch.object(cli_node_miner, "run_node_only") as mock_node_only, \
-         patch.object(cli_node_miner, "run_miner") as mock_miner:
+    with patch.object(cli_node_miner, "_parse_args") as mock_parse, \
+         patch.object(cli_node_miner, "_run_node_only") as mock_node_only, \
+         patch.object(cli_node_miner, "_run_miner") as mock_miner:
         mock_parse.return_value = MagicMock(
             thread_report=False,
             init_genesis=False,
@@ -464,10 +465,10 @@ def test_cli_main_dispatches_init_genesis():
         sys.path.insert(0, apps_dir)
     from apps import cli_node_miner
 
-    with patch.object(cli_node_miner, "parse_args") as mock_parse, \
-         patch.object(cli_node_miner, "run_init_genesis") as mock_genesis, \
-         patch.object(cli_node_miner, "run_node_only") as mock_node_only, \
-         patch.object(cli_node_miner, "run_miner") as mock_miner:
+    with patch.object(cli_node_miner, "_parse_args") as mock_parse, \
+         patch.object(cli_node_miner, "_run_init_genesis") as mock_genesis, \
+         patch.object(cli_node_miner, "_run_node_only") as mock_node_only, \
+         patch.object(cli_node_miner, "_run_miner") as mock_miner:
         mock_parse.return_value = MagicMock(
             thread_report=False,
             init_genesis=True,
@@ -480,3 +481,150 @@ def test_cli_main_dispatches_init_genesis():
         mock_genesis.assert_called_once()
         mock_node_only.assert_not_called()
         mock_miner.assert_not_called()
+
+
+
+# --- Tests for Extracted Internal Mining Methods ---
+
+def test_miner_ensure_genesis(miner):
+    miner.blockchain = MagicMock(height=10)
+    assert miner._ensure_genesis() is True
+    miner.blockchain.ensure_genesis.assert_not_called()
+
+    miner.blockchain.height = -1
+    miner.blockchain.ensure_genesis.return_value = True
+    assert miner._ensure_genesis() is True
+    miner.blockchain.ensure_genesis.assert_called_once()
+
+    miner.blockchain.ensure_genesis.return_value = False
+    assert miner._ensure_genesis() is False
+
+
+def test_miner_check_mining_sync_no_peers(miner):
+    miner._has_active_peers = MagicMock(return_value=False)
+    miner._bootstrap_is_self_only = MagicMock(return_value=False)
+    with patch("tsarchain.miner.orchestrator.time.sleep"):
+        synced, gap_log = miner._check_mining_sync(None)
+    assert synced is False
+    assert gap_log == "no_peers"
+
+
+def test_miner_check_mining_sync_no_trusted(miner):
+    miner._has_active_peers = MagicMock(return_value=True)
+    miner._trusted_best_height = MagicMock(return_value=-1)
+    miner._trusted_tip_hash = MagicMock(return_value=None)
+    miner._get_local_tip = MagicMock(return_value=(0, "hash0"))
+    miner.network = MagicMock()
+    with patch("tsarchain.miner.orchestrator.time.sleep"):
+        synced, gap_log = miner._check_mining_sync(None)
+    assert synced is False
+    assert gap_log == "no_trusted"
+    miner.network.request_sync.assert_called_once_with(fast=True)
+
+
+def test_miner_check_mining_sync_gap(miner):
+    miner._has_active_peers = MagicMock(return_value=True)
+    miner._trusted_best_height = MagicMock(return_value=10)
+    miner._trusted_tip_hash = MagicMock(return_value="trusted_hash")
+    miner._get_local_tip = MagicMock(return_value=(5, "local_hash"))
+    miner.blockchain = MagicMock(height=5)
+    miner.network = MagicMock()
+    with patch("tsarchain.miner.orchestrator.time.sleep"):
+        synced, gap_log = miner._check_mining_sync(None)
+    assert synced is False
+    assert gap_log == 5
+    miner.network.request_sync.assert_called_once_with(fast=True)
+
+
+def test_miner_check_mining_sync_hash_mismatch(miner):
+    miner._has_active_peers = MagicMock(return_value=True)
+    miner._trusted_best_height = MagicMock(return_value=5)
+    miner._trusted_tip_hash = MagicMock(return_value="trusted_hash")
+    miner._get_local_tip = MagicMock(return_value=(5, "different_hash"))
+    miner.blockchain = MagicMock(height=5)
+    miner.network = MagicMock()
+    with patch("tsarchain.miner.orchestrator.time.sleep"):
+        synced, gap_log = miner._check_mining_sync(None)
+    assert synced is False
+    assert gap_log == "hash_mismatch"
+    miner.network.request_sync.assert_called_once_with(fast=True)
+
+
+def test_miner_check_mining_sync_success(miner):
+    miner._has_active_peers = MagicMock(return_value=True)
+    miner._trusted_best_height = MagicMock(return_value=5)
+    miner._trusted_tip_hash = MagicMock(return_value="same_hash")
+    miner._get_local_tip = MagicMock(return_value=(5, "same_hash"))
+    miner.blockchain = MagicMock(height=5)
+    miner.network = MagicMock()
+    synced, gap_log = miner._check_mining_sync(None)
+    assert synced is True
+    assert gap_log is None
+
+
+def test_miner_handle_mined_block(miner):
+    miner.network = MagicMock()
+    miner.network.publish_block.return_value = 1
+    miner.tui = MagicMock()
+
+    block = MagicMock(height=42, transactions=[MagicMock(), MagicMock()])
+    block.hash.return_value.hex.return_value = "beef" * 16
+
+    miner._handle_mined_block(block)
+
+    miner.tui.note_block_mined.assert_called_once_with(42)
+    miner.network.publish_block.assert_called_once_with(block, exclude=None, force=True)
+
+
+def test_miner_handle_tip_abort(miner):
+    miner._get_local_tip = MagicMock(return_value=(10, "deadbeef" * 4))
+    miner.abort_block_mining.set()
+    miner._handle_tip_abort()
+    assert not miner.abort_block_mining.is_set()
+
+
+def test_miner_process_mining_result(miner):
+    block = MagicMock()
+    with patch.object(miner, "_handle_mined_block") as mock_mined,          patch.object(miner, "_handle_tip_abort") as mock_abort:
+        miner._process_mining_result(block)
+        mock_mined.assert_called_once_with(block)
+        mock_abort.assert_not_called()
+
+    with patch.object(miner, "_handle_mined_block") as mock_mined,          patch.object(miner, "_handle_tip_abort") as mock_abort:
+        miner.abort_block_mining.set()
+        miner._process_mining_result(None)
+        mock_mined.assert_not_called()
+        mock_abort.assert_called_once()
+
+
+def test_miner_handle_mining_interrupt(miner):
+    miner.mining_alive = True
+    miner._handle_mining_interrupt()
+    assert miner.mining_alive is False
+    assert miner.cancel_mining.is_set()
+    assert miner.abort_block_mining.is_set()
+
+
+def test_miner_handle_mining_os_error(miner):
+    import errno
+    eintr = OSError()
+    eintr.errno = errno.EINTR
+    assert miner._handle_mining_os_error(eintr) is True
+    assert miner.mining_alive is False
+
+    miner.mining_alive = True
+    eother = OSError()
+    eother.errno = errno.EACCES
+    with patch("tsarchain.miner.orchestrator.time.sleep"):
+        assert miner._handle_mining_os_error(eother) is False
+    assert miner.mining_alive is True
+
+
+def test_miner_run_mine_worker_exception(miner):
+    miner.blockchain = MagicMock()
+    def raise_runner(result, cancel):
+        result["exc"] = RuntimeError("Worker failure")
+
+    with patch.object(miner, "_mine_block_runner", side_effect=raise_runner):
+        with pytest.raises(RuntimeError, match="Worker failure"):
+            miner._run_mine_worker()

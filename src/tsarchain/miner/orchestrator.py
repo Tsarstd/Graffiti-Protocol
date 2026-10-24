@@ -11,7 +11,6 @@ import threading
 import contextlib
 import multiprocessing as mp
 from multiprocessing.synchronize import Event as MpEvent
-from datetime import datetime
 
 # ---------------- Local Project ----------------
 from ..utils import config as CFG
@@ -31,28 +30,12 @@ with contextlib.suppress(AttributeError):
 
 ADDRESS_PATTERN = re.compile(r"^tsar1[0-9a-z]{20,120}$")
 
-def _stamp() -> str:
-    now = datetime.now()
-    d = f"{now.year:04d}.{now.month:02d}.{now.day:02d}"
-    t = f"{now.hour:02d}.{now.minute:02d}.{now.second:02d}"
-    return f"{COL.BOLD}{COL.GREY} {d} {t} {COL.RESET}"
-
-_clog_func = None
-
-def set_clog_func(func):
-    global _clog_func
-    _clog_func = func if func is not clog else None
-
-def clog(message: str, color: str = COL.GREY):
-    if _clog_func is not None and _clog_func is not clog:
-        _clog_func(message, color)
-    else:
-        print(f"{_stamp()} : {color}{message}{COL.RESET}")
 
 def _enable_siginterrupt():
     for sig in (signal.SIGINT, signal.SIGTERM):
         with contextlib.suppress(AttributeError, ValueError, OSError):
             signal.siginterrupt(sig, False)
+
 
 def _register_bootstrap_peers(network: Network) -> int:
     fallback_nodes = tuple(CFG.BOOTSTRAP_NODES or (CFG.BOOTSTRAP_NODE,))
@@ -74,32 +57,35 @@ def _register_bootstrap_peers(network: Network) -> int:
 
     return count
 
-def _run_snapshot_bootstrap(enabled: bool):
+
+def _run_snapshot_bootstrap(enabled: bool, log_fn=None):
     if not enabled:
-        clog("[Bootstrap] Fast Sync Snapshot: DISABLED. Proceeding with Seed RPC sync.")
+        log_fn("[Bootstrap] Fast Sync Snapshot: DISABLED. Proceeding with Seed RPC sync.")
         return None
 
     if CFG.BACKUP_SNAPSHOT:
-        clog(f"[Snapshot] Auto backup snapshots: ENABLED (Interval: every {CFG.BLOCK_BACKUP_SNAPSHOT} blocks to '{CFG.SNAPSHOT_BACKUP_DIR}')")
+        log_fn(f"[Snapshot] Auto backup snapshots: ENABLED (Interval: every {CFG.BLOCK_BACKUP_SNAPSHOT} blocks to '{CFG.SNAPSHOT_BACKUP_DIR}')")
     else:
-        clog("[Snapshot] Auto backup snapshots: DISABLED")
+        log_fn("[Snapshot] Auto backup snapshots: DISABLED")
 
     def _printer(message: str):
-        clog(f"[Bootstrap] {message}")
+        log_fn(f"[Bootstrap] {message}")
 
     result = maybe_bootstrap_snapshot(progress_cb=_printer)
     if result.status == "failed":
-        clog(f"[Bootstrap] Snapshot fast sync failed: {result.reason}. Falling back to standard P2P Seed RPC sync.")
+        log_fn(f"[Bootstrap] Snapshot fast sync failed: {result.reason}. Falling back to standard P2P Seed RPC sync.")
     elif result.status == "skipped":
-        clog(f"[Bootstrap] Snapshot fast sync skipped ({result.reason}). Using standard P2P Seed RPC sync.")
+        log_fn(f"[Bootstrap] Snapshot fast sync skipped ({result.reason}). Using standard P2P Seed RPC sync.")
     elif result.status == "installed":
         bytes_mb = float(result.bytes_written or 0) / (1024 * 1024)
         duration = float(result.duration_s or 0)
-        clog(f"[Bootstrap] Snapshot SUCCESS! Restored local database to height {result.height} ({bytes_mb:.2f} MB in {duration:.1f}s)")
-        clog("[Bootstrap] Database restored. Syncing remaining blocks...")
+        log_fn(f"[Bootstrap] Snapshot SUCCESS! Restored local database to height {result.height} ({bytes_mb:.2f} MB in {duration:.1f}s)")
+        log_fn("[Bootstrap] Database restored. Syncing remaining blocks...")
     else:
-        clog(f"[Bootstrap] Snapshot status: {result.status} ({result.reason})")
+        log_fn(f"[Bootstrap] Snapshot status: {result.status} ({result.reason})")
     return result
+
+
 
 class SimpleMiner:
     def __init__(
@@ -109,10 +95,12 @@ class SimpleMiner:
         bootstrap_snapshot: bool = True,
         *,
         progress_queue: "mp.Queue | None" = None,
+        log_fn=None,
     ):
         self.address = address
         self.cores = cores
         self.bootstrap_snapshot = bootstrap_snapshot
+        self.log_fn = log_fn
         self.mining_alive = True
         self.cancel_mining = mp.Event()
         self.abort_block_mining = mp.Event()
@@ -130,38 +118,261 @@ class SimpleMiner:
         self.thread_monitor = get_thread_monitor()
         register_thread_monitoring_signal()
 
-        signal.signal(signal.SIGTERM, self.signal_handler)
+        signal.signal(signal.SIGTERM, self._signal_handler)
         
         def _sigint_with_report(signum, frame):
             try:
-                self.signal_handler(signum, frame)
+                self._signal_handler(signum, frame)
             finally:
                 if self.tui is not None:
                     self.tui.stop()
                 self.thread_monitor.print_thread_report(detailed=True)
 
         signal.signal(signal.SIGINT, _sigint_with_report)
-        
         _enable_siginterrupt()
 
-    def signal_handler(self, signum, _frame):
-        clog(f"Received signal {signum}, shutting down...")
+
+    def start_mining(self, timeout=560):
+        if not self._validate_address():
+            return False
+
+        self.thread_monitor.start_monitoring()
+        self.log_fn("Thread monitoring started")
+
+        if not self._start_node():
+            return False
+        if not self._wait_for_sync(timeout=timeout):
+            return False
+        
+        self.log_fn(f"{COL.BOLD}{COL.BG_WHITE} Press {COL.RESET}{COL.BOLD}{COL.BG_RED} Ctrl+C {COL.RESET}{COL.BG_WHITE}{COL.BOLD}{COL.ORANGE} to stop mining {COL.RESET}")
+
+        if not self._ensure_genesis():
+            return False
+
+        self._mining_loop()
+        return True
+
+
+    def stop(self):
+        self.mining_alive = False
+        if self.cancel_mining:
+            self.cancel_mining.set()
+        if self.abort_block_mining:
+            self.abort_block_mining.set()
+            
+        if self._progress_q:
+            with contextlib.suppress(Exception):
+                self._progress_q.cancel_join_thread()
+
+        if self.network:
+            self.network.shutdown()
+        self.log_fn("Miner stopped")
+        self.thread_monitor.stop_monitoring()
+
+
+# =============================================================================
+# INTERNAL METHODS
+# =============================================================================
+
+
+    def _ensure_genesis(self) -> bool:
+        if (self.blockchain.height if self.blockchain else -1) < 0:
+            created = self.blockchain.ensure_genesis(self.address, use_cores=self.cores)
+            if created:
+                self.log_fn("Genesis block created")
+            else:
+                self.log_fn("Failed to create genesis block")
+                return False
+        return True
+
+
+    def _request_sync_wait(self) -> None:
+        if self.network:
+            self.network.request_sync(fast=True)
+        time.sleep(2)
+
+
+    def _check_mining_sync(self, last_gap_log: object = None) -> tuple[bool, object]:
+        if not self._has_active_peers() and not self._bootstrap_is_self_only():
+            if last_gap_log != "no_peers":
+                self.log_fn("[mining] No active peers; pausing mining until peers are back.")
+            time.sleep(2)
+            return False, "no_peers"
+
+        local_height = int(self.blockchain.height if self.blockchain else -1)
+        trusted_height = self._trusted_best_height(force_refresh=True)
+        trusted_hash = self._trusted_tip_hash(trusted_height) if trusted_height >= 0 else None
+        _, local_hash = self._get_local_tip()
+
+        if trusted_height < 0:
+            if last_gap_log != "no_trusted":
+                self.log_fn("[mining] Waiting for trusted bootstrap height before mining...")
+            self._request_sync_wait()
+            return False, "no_trusted"
+
+        gap = trusted_height - local_height
+        if gap > 0:
+            if last_gap_log != gap:
+                self.log_fn(
+                    f"[mining] Local height {local_height} behind trusted {trusted_height} (gap {gap}); syncing before mining..."
+                )
+            self._request_sync_wait()
+            return False, gap
+
+        if trusted_hash and local_hash and local_hash.lower() != trusted_hash:
+            if last_gap_log != "hash_mismatch":
+                self.log_fn("[mining] Local tip hash differs from trusted; syncing before mining...")
+            self._request_sync_wait()
+            return False, "hash_mismatch"
+
+        return True, None
+
+
+    def _supervise_mine_thread(self, mine_thread: threading.Thread, worker_cancel: MpEvent) -> None:
+        cancel_logged = False
+        while mine_thread.is_alive() and self.mining_alive:
+            mine_thread.join(timeout=0.2)
+            if self.cancel_mining.is_set():
+                worker_cancel.set()
+                if not cancel_logged:
+                    self.log_fn("[mining] Cancellation requested; waiting for miner thread to stop...")
+                    cancel_logged = True
+            elif self.abort_block_mining.is_set():
+                worker_cancel.set()
+
+        if mine_thread.is_alive():
+            mine_thread.join(timeout=2.0)
+
+
+    def _run_mine_worker(self):
+        self.abort_block_mining.clear()
+        worker_cancel = mp.Event()
+        result_holder: dict = {}
+        mine_thread = threading.Thread(
+            target=self._mine_block_runner,
+            args=(result_holder, worker_cancel),
+            name="MineBlockWorker",
+            daemon=True,
+        )
+        mine_thread.start()
+
+        self._supervise_mine_thread(mine_thread, worker_cancel)
+
+        exc = result_holder.get("exc")
+        if exc:
+            raise exc
+
+        return result_holder.get("block")
+
+
+    def _handle_mined_block(self, block) -> None:
+        self.abort_block_mining.clear()
+        if self.tui is not None:
+            self.tui.note_block_mined(block.height)
+
+        h = block.height if block.height is not None else "?"
+        txs = block.transactions or []
+        confirmed = max(len(txs) - 1, 0)
+        self.log_fn(
+            f"Block mined at height {h}: {block.hash().hex()[:64]} ({confirmed} tx{'' if confirmed == 1 else 's'})"
+        )
+        try:
+            sent = self.network.publish_block(block, exclude=None, force=True)
+            if sent <= 0:
+                self.network.request_sync(fast=True)
+                self._queue_block_for_broadcast(block)
+        except Exception as exc:
+            self.log_fn(f"Broadcast error: {exc}")
+            self._queue_block_for_broadcast(block)
+
+
+    def _handle_tip_abort(self) -> None:
+        self.abort_block_mining.clear()
+        tip_h, tip_hx = self._get_local_tip()
+        hx_str = f" [{tip_hx[:16]}...]" if tip_hx else ""
+        self.log_fn(f"Received new block at height {tip_h}{hx_str}; switch to latest tip.")
+
+
+    def _process_mining_result(self, block) -> None:
+        if block:
+            self._handle_mined_block(block)
+        elif self.abort_block_mining.is_set():
+            self._handle_tip_abort()
+
+
+    def _handle_mining_interrupt(self) -> None:
+        self.mining_alive = False
+        if self.cancel_mining:
+            self.cancel_mining.set()
+        if self.abort_block_mining:
+            self.abort_block_mining.set()
+        self.log_fn("[signal] Mining interrupted by user")
+
+
+    def _handle_mining_os_error(self, exc: OSError) -> bool:
+        if exc.errno in INTERRUPTED_ERRNOS:
+            self.log_fn("[mining] Interrupted system call; stopping miners...")
+            self.mining_alive = False
+            self.cancel_mining.set()
+            if self.abort_block_mining:
+                self.abort_block_mining.set()
+            return True
+        self.log_fn(f"Mining error: {exc}")
+        time.sleep(1)
+        return False
+
+
+    def _mining_loop(self) -> None:
+        last_gap_log = None
+        while self.mining_alive:
+            try:
+                synced, last_gap_log = self._check_mining_sync(last_gap_log)
+                if not synced:
+                    continue
+
+                self._flush_pending_blocks()
+                if self.network and self.network.peers:
+                    self.network.request_sync(fast=True)
+
+                block = self._run_mine_worker()
+
+                if not self.mining_alive or self.cancel_mining.is_set():
+                    break
+
+                self._process_mining_result(block)
+
+            except KeyboardInterrupt:
+                self._handle_mining_interrupt()
+                break
+            except OSError as exc:
+                if self._handle_mining_os_error(exc):
+                    break
+            except Exception as exc:
+                self.log_fn(f"Mining error: {exc}")
+                time.sleep(1)
+
+
+
+    def _signal_handler(self, signum, _frame):
+        self.log_fn(f"Received signal {signum}, shutting down...")
         self.mining_alive = False
         if self.cancel_mining:
             self.cancel_mining.set()
         if self.abort_block_mining:
             self.abort_block_mining.set()
 
-    def validate_address(self):
+
+    def _validate_address(self):
         if not self.address:
-            clog("Error: Address is required (tsar1...).")
+            self.log_fn("Error: Address is required (tsar1...).")
             return False
         addr = self.address.strip().lower()
         if not ADDRESS_PATTERN.match(addr):
-            clog("Error: Address must start with 'tsar1' and contain only lowercase base32 chars (length 24-124).")
+            self.log_fn("Error: Address must start with 'tsar1' and contain only lowercase base32 chars (length 24-124).")
             return False
         self.address = addr
         return True
+
 
     def _queue_block_for_broadcast(self, block) -> None:
         hx = block.hash().hex()
@@ -174,6 +385,7 @@ class SimpleMiner:
             old = self._pending_blocks.pop(0)
             self._pending_block_hashes.discard(old.hash().hex())
 
+
     def _flush_pending_blocks(self) -> None:
         if not self.network or not self._pending_blocks:
             return
@@ -185,14 +397,16 @@ class SimpleMiner:
                     self._pending_block_hashes.discard(blk.hash().hex())
                     continue
             except Exception as exc:
-                clog(f"[broadcast] retry failed: {exc}")
+                self.log_fn(f"[broadcast] retry failed: {exc}")
             remaining.append(blk)
         self._pending_blocks = remaining
+
 
     def _has_active_peers(self) -> bool:
         if not self.network:
             return False
         return bool(self.network.inbound_peers or self.network.outbound_peers)
+
 
     def _bootstrap_seeds(self) -> list[tuple[str, int]]:
         seeds = []
@@ -203,6 +417,7 @@ class SimpleMiner:
             host, port = peer
             seeds.append((str(host), int(port)))
         return seeds
+
 
     def _bootstrap_is_self_only(self) -> bool:
         if self._bootstrap_self_only is not None:
@@ -216,14 +431,17 @@ class SimpleMiner:
         self._bootstrap_self_only = all(is_self(h, p) for h, p in seeds)
         return bool(self._bootstrap_self_only)
 
+
     def _get_local_tip(self) -> tuple[int, str | None]:
         if not self.blockchain:
             return -1, None
         tip = self.blockchain.get_last_block()
         return int(self.blockchain.height), tip.hash().hex() if tip else None
 
+
     def _on_tip_changed(self, new_height: int, new_hash: str):
         self.abort_block_mining.set()
+
 
     def _mine_block_runner(self, result: dict, cancel_event: MpEvent | None = None):
         """
@@ -238,6 +456,7 @@ class SimpleMiner:
             progress_queue=self._progress_q,
         )
         result["block"] = blk
+
 
     def _trusted_best_height(self, force_refresh: bool = False) -> int:
         """
@@ -290,6 +509,7 @@ class SimpleMiner:
         self._last_trusted_probe = now
         return best
 
+
     def _trusted_tip_hash(self, height: int) -> str | None:
         if height < 0 or not self.network:
             return None
@@ -308,9 +528,10 @@ class SimpleMiner:
                 return str(hx).lower()
         return None
 
-    def start_node(self):
+
+    def _start_node(self):
         try:
-            _run_snapshot_bootstrap(self.bootstrap_snapshot)
+            _run_snapshot_bootstrap(self.bootstrap_snapshot, log_fn=self.log_fn)
             self.blockchain = Blockchain(
                 use_cores=self.cores,
                 miner_address=self.address,
@@ -320,15 +541,16 @@ class SimpleMiner:
             self.network.start()
             self.network.warmup_background()
             peer_count = _register_bootstrap_peers(self.network)
-            clog(f"Node started with {peer_count} bootstrap peers")
+            self.log_fn(f"Node started with {peer_count} bootstrap peers")
             return True
         except Exception as exc:
             log.exception("error")
-            clog(f"Failed to start node: {exc}")
+            self.log_fn(f"Failed to start node: {exc}")
             return False
 
-    def wait_for_sync(self, timeout=560):
-        clog("Waiting for blockchain sync...")
+
+    def _wait_for_sync(self, timeout=560):
+        self.log_fn("Waiting for blockchain sync...")
         start_time = time.time()
         last_progress = (-1, -1, -1)
 
@@ -342,7 +564,7 @@ class SimpleMiner:
 
                 active_peers = self._has_active_peers()
                 if not active_peers and not self._bootstrap_is_self_only():
-                    clog("[Sync] Waiting for peer connection...")
+                    self.log_fn("[Sync] Waiting for peer connection...")
                     time.sleep(3)
                     continue
 
@@ -356,10 +578,10 @@ class SimpleMiner:
                     and local_h >= best_known
                     and (trusted_hash is None or (local_hash and local_hash.lower() == trusted_hash))
                 ):
-                    clog(f"Chain synced to height {local_h} (trusted tip {best_known})")
+                    self.log_fn(f"Chain synced to height {local_h} (trusted tip {best_known})")
                     return True
                 if trusted_hash and local_hash and local_hash.lower() != trusted_hash:
-                    clog("[Sync] Local tip hash differs from trusted; requesting resync...")
+                    self.log_fn("[Sync] Local tip hash differs from trusted; requesting resync...")
                     if self.network:
                         self.network.request_sync(fast=True)
                     time.sleep(2)
@@ -368,229 +590,50 @@ class SimpleMiner:
                 progress = (height, best_known, trusted_height)
                 if best_known >= 0 and progress != last_progress:
                     tip_label = trusted_height if trusted_height >= 0 else best_known
-                    clog(f"Sync progress - local {height}, trusted best {tip_label}")
+                    self.log_fn(f"Sync progress - local {height}, trusted best {tip_label}")
                     last_progress = progress
                 time.sleep(2)
             except Exception as exc:
-                clog(f"Sync error: {exc}")
+                self.log_fn(f"Sync error: {exc}")
                 time.sleep(2)
 
-        clog("Sync timeout or interrupted")
+        self.log_fn("Sync timeout or interrupted")
         return False
 
-    def start_mining(self, timeout=560):
-        if not self.validate_address():
-            return False
-        
-        self.thread_monitor.start_monitoring()
-        clog("Thread monitoring started")
-        
-        if not self.start_node():
-            return False
-        if not self.wait_for_sync(timeout=timeout):
-            return False
-        
-        clog(f"{COL.BOLD}{COL.BG_WHITE} Press {COL.RESET}{COL.BOLD}{COL.BG_RED} Ctrl+C {COL.RESET}{COL.BG_WHITE}{COL.BOLD}{COL.ORANGE} to stop mining {COL.RESET}")
-
-        if (self.blockchain.height if self.blockchain else -1) < 0:
-            created = self.blockchain.ensure_genesis(self.address, use_cores=self.cores)
-            if created:
-                clog("Genesis block created")
-            else:
-                clog("Failed to create genesis block")
-                return False
-
-        # Mining Loop
-        last_gap_log = None
-        while self.mining_alive:
-            try:
-                if not self._has_active_peers() and not self._bootstrap_is_self_only():
-                    if last_gap_log != "no_peers":
-                        clog("[mining] No active peers; pausing mining until peers are back.")
-                        last_gap_log = "no_peers"
-                    time.sleep(2)
-                    continue
-
-                local_height = int(self.blockchain.height if self.blockchain else -1)
-
-                trusted_height = self._trusted_best_height(force_refresh=True)
-                trusted_hash = self._trusted_tip_hash(trusted_height) if trusted_height >= 0 else None
-                _, local_hash = self._get_local_tip()
-                if trusted_height < 0:
-                    if last_gap_log != "no_trusted":
-                        clog("[mining] Waiting for trusted bootstrap height before mining...")
-                        last_gap_log = "no_trusted"
-                    if self.network:
-                        self.network.request_sync(fast=True)
-                    time.sleep(2)
-                    continue
-
-                gap = trusted_height - local_height
-                if gap > 0:
-                    if last_gap_log != gap:
-                        clog(f"[mining] Local height {local_height} behind trusted {trusted_height} (gap {gap}); syncing before mining...")
-                        last_gap_log = gap
-                    if self.network:
-                        self.network.request_sync(fast=True)
-                    time.sleep(2)
-                    continue
-                if trusted_hash and local_hash and local_hash.lower() != trusted_hash:
-                    if last_gap_log != "hash_mismatch":
-                        clog("[mining] Local tip hash differs from trusted; syncing before mining...")
-                        last_gap_log = "hash_mismatch"
-                    if self.network:
-                        self.network.request_sync(fast=True)
-                    time.sleep(2)
-                    continue
-
-                last_gap_log = None
-                self._flush_pending_blocks()
-                if self.network.peers:
-                    self.network.request_sync(fast=True)
-
-                self.abort_block_mining.clear()
-                worker_cancel = mp.Event()
-                result_holder: dict = {}
-                mine_thread = threading.Thread(
-                    target=self._mine_block_runner,
-                    args=(result_holder, worker_cancel),
-                    name="MineBlockWorker",
-                    daemon=True,
-                )
-                mine_thread.start()
-
-                cancel_logged = False
-                while mine_thread.is_alive() and self.mining_alive:
-                    mine_thread.join(timeout=0.2)
-                    if self.cancel_mining.is_set():
-                        worker_cancel.set()
-                        if not cancel_logged:
-                            clog("[mining] Cancellation requested; waiting for miner thread to stop...")
-                            cancel_logged = True
-                    elif self.abort_block_mining.is_set():
-                        worker_cancel.set()
-
-                if mine_thread.is_alive():
-                    mine_thread.join(timeout=2.0)
-
-                block = result_holder.get("block")
-                exc = result_holder.get("exc")
-                if exc:
-                    raise exc
-
-                if not self.mining_alive or self.cancel_mining.is_set():
-                    break
-
-                if block:
-                    self.abort_block_mining.clear()
-                    if self.tui is not None:
-                        self.tui.note_block_mined(block.height)
-
-                    h = block.height if block.height is not None else "?"
-                    txs = block.transactions or []
-                    confirmed = max(len(txs) - 1, 0)
-                    clog(
-                        f"Block mined at height {h}: {block.hash().hex()[:64]} ({confirmed} tx{'' if confirmed == 1 else 's'})"
-                    )
-                    try:
-                        sent = self.network.publish_block(block, exclude=None, force=True)
-                        if sent <= 0:
-                            self.network.request_sync(fast=True)
-                            self._queue_block_for_broadcast(block)
-                    except Exception as exc:
-                        clog(f"Broadcast error: {exc}")
-                        self._queue_block_for_broadcast(block)
-                elif self.abort_block_mining.is_set():
-                    self.abort_block_mining.clear()
-                    tip_h, tip_hx = self._get_local_tip()
-                    hx_str = f" [{tip_hx[:16]}...]" if tip_hx else ""
-                    clog(f"Received new block at height {tip_h}{hx_str}; switch to latest tip.")
-                    continue
-
-            except KeyboardInterrupt:
-                self.mining_alive = False
-                if self.cancel_mining:
-                    self.cancel_mining.set()
-                if self.abort_block_mining:
-                    self.abort_block_mining.set()
-                clog("[signal] Mining interrupted by user")
-                break
-            except OSError as exc:
-                if exc.errno in INTERRUPTED_ERRNOS:
-                    clog("[mining] Interrupted system call; stopping miners...")
-                    self.mining_alive = False
-                    self.cancel_mining.set()
-                    if self.abort_block_mining:
-                        self.abort_block_mining.set()
-                    break
-                clog(f"Mining error: {exc}")
-                time.sleep(1)
-            except Exception as exc:
-                clog(f"Mining error: {exc}")
-                time.sleep(1)
-
-        return True
-
-    def stop(self):
-        self.mining_alive = False
-        if self.cancel_mining:
-            self.cancel_mining.set()
-        if self.abort_block_mining:
-            self.abort_block_mining.set()
-            
-        if self._progress_q:
-            with contextlib.suppress(Exception):
-                self._progress_q.cancel_join_thread()
-
-        if self.network:
-            self.network.shutdown()
-        clog("Miner stopped")
-        self.thread_monitor.stop_monitoring()
 
 
 class NodeRunner:
-    def __init__(self, bootstrap_snapshot: bool = True):
+    def __init__(self, bootstrap_snapshot: bool = True, log_fn=None):
         self.blockchain = None
         self.network = None
         self.running = True
         self._last_chain_height = -1
         self._sync_ready = False
         self.bootstrap_snapshot = bootstrap_snapshot
+        self.log_fn = log_fn
         self._threads: list[threading.Thread] = []
         signal.signal(signal.SIGINT, self._handle_signal)
         signal.signal(signal.SIGTERM, self._handle_signal)
         _enable_siginterrupt()
 
 
-    def _handle_signal(self, *_args):
-        clog("Stopping node...")
-        log.info("Ctrl+C received - stopping node-only runner.")
-        self.running = False
-
-
-    def _has_active_peers(self) -> bool:
-        if not self.network:
-            return False
-        return bool(self.network.peers or self.network.inbound_peers or self.network.outbound_peers)
-
-
     def start(self):
-        clog("Starting TsarChain node (no mining)...")
+        self.log_fn("Starting TsarChain node (no mining)...")
         try:
-            _run_snapshot_bootstrap(self.bootstrap_snapshot)
+            _run_snapshot_bootstrap(self.bootstrap_snapshot, log_fn=self.log_fn)
             self.blockchain = Blockchain(
                 use_cores=None,
                 miner_address=None,
             )
             
             self._last_chain_height = int(self.blockchain.height if self.blockchain else -1)
-            clog(f"Local chain height: {self._last_chain_height}")
+            self.log_fn(f"Local chain height: {self._last_chain_height}")
             
             self.network = Network(blockchain=self.blockchain)
             self.network.start()
             self.network.warmup_background()
             peer_count = _register_bootstrap_peers(self.network)
-            clog(f"Node online on port {self.network.port}, bootstrap peers: {peer_count}")
+            self.log_fn(f"Node online on port {self.network.port}, bootstrap peers: {peer_count}")
 
             # == Early fast-sync ==
             def _early_sync():
@@ -613,10 +656,27 @@ class NodeRunner:
                 time.sleep(2)
                 
         except Exception as exc:
-            clog(f"Node error: {exc}")
+            self.log_fn(f"Node error: {exc}")
             
         finally:
-            self.shutdown()
+            self._shutdown()
+
+
+# =============================================================================
+# INTERNAL METHODS
+# =============================================================================
+
+
+    def _handle_signal(self, *_args):
+        self.log_fn("Stopping node...")
+        log.info("Ctrl+C received - stopping node-only runner.")
+        self.running = False
+
+
+    def _has_active_peers(self) -> bool:
+        if not self.network:
+            return False
+        return bool(self.network.peers or self.network.inbound_peers or self.network.outbound_peers)
 
 
     def _sync_daemon(self):
@@ -627,7 +687,7 @@ class NodeRunner:
                 if not self._has_active_peers():
                     msg = "[Sync] Waiting for peer connection..."
                     if msg != last_status:
-                        clog(msg)
+                        self.log_fn(msg)
                         last_status = msg
                     self._sync_ready = False
                     time.sleep(5)
@@ -638,7 +698,7 @@ class NodeRunner:
                 # Progress print (only when changed)
                 if height != self._last_chain_height:
                     if height >= 0:
-                        clog(f"[Sync] Chain height now {height}")
+                        self.log_fn(f"[Sync] Chain height now {height}")
                     self._last_chain_height = height
 
                 peer_sync_map = self.network._peer_last_sync or {}
@@ -646,7 +706,7 @@ class NodeRunner:
                 synced_recently = latest_sync and (time.time() - latest_sync) < 10
                 if not self._sync_ready and height >= 0 and synced_recently:
                     self._sync_ready = True
-                    clog("Chain has been confirmed. Node is live (no mining).")
+                    self.log_fn("Chain has been confirmed. Node is live (no mining).")
 
                 if not self._sync_ready:
                     self.network.request_sync(fast=True)
@@ -656,11 +716,11 @@ class NodeRunner:
                     time.sleep(30)
 
             except Exception as e:
-                clog(f"[node-only] sync error: {e}")
+                self.log_fn(f"[node-only] sync error: {e}")
                 time.sleep(5)
 
 
-    def shutdown(self):
+    def _shutdown(self):
         self.running = False
         if self.network:
             self.network.shutdown()
@@ -669,5 +729,5 @@ class NodeRunner:
             if t and t.is_alive():
                 t.join(timeout=2.5)
         self._threads.clear()
-        clog("Node stopped.")
+        self.log_fn("Node stopped.")
         log.info("Node-only runner stopped (cleanup complete).")

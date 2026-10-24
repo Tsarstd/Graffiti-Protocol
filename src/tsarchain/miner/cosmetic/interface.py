@@ -46,39 +46,39 @@ def bg_rgb_color(r, g, b):
 
 
 # Text
-ORANGE = rgb_color(242, 132, 0)
-GREY = rgb_color(245, 246, 244)
-YELLOW = rgb_color(232, 215, 59)
-GREEN = rgb_color(59, 196, 59)
-CYAN = rgb_color(0, 215, 235)
-RED = rgb_color(235, 59, 59)
+RED     = rgb_color(235, 59, 59)
+GREY    = rgb_color(245, 246, 244)
+CYAN    = rgb_color(0, 215, 235)
+GREEN   = rgb_color(59, 196, 59)
+YELLOW  = rgb_color(232, 215, 59)
+ORANGE  = rgb_color(242, 132, 0)
 
 # Header Info
+BG_HEADER  = bg_rgb_color(220, 64, 50)
 TXT_HEADER = rgb_color(237, 237, 237)
-BG_HEADER = bg_rgb_color(220, 64, 50)
 
 # Info Column
 TXT_INFO = rgb_color(64, 64, 64)
 
 # Background
-BG_GREY = bg_rgb_color(179, 189, 193)
-BG_WHITE = bg_rgb_color(240, 247, 249)
-BG_RED = bg_rgb_color(191, 34, 34)
-BG_BLUE = bg_rgb_color(32, 163, 223)
+BG_RED    = bg_rgb_color(191, 34, 34)
+BG_GREY   = bg_rgb_color(179, 189, 193)
+BG_BLUE   = bg_rgb_color(32, 163, 223)
+BG_GREEN  = bg_rgb_color(59, 196, 59)
+BG_WHITE  = bg_rgb_color(240, 247, 249)
 BG_ORANGE = bg_rgb_color(242, 132, 0)
 BG_YELLOW = bg_rgb_color(232, 215, 59)
-BG_GREEN = bg_rgb_color(59, 196, 59)
 
 
 # Text styles
-RESET = "\033[0m"
-BOLD = "\033[1m"
-DIM = "\033[2m"
-ITALIC = "\033[3m"
+DIM       = "\033[2m"
+BOLD      = "\033[1m"
+RESET     = "\033[0m"
+BLINK     = "\033[5m"
+HIDDEN    = "\033[8m"
+ITALIC    = "\033[3m"
+REVERSE   = "\033[7m"
 UNDERLINE = "\033[4m"
-BLINK = "\033[5m"
-REVERSE = "\033[7m"
-HIDDEN = "\033[8m"
 
 
 def _human_bytes(n: int | float) -> str:

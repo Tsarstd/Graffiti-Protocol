@@ -3,11 +3,9 @@
 # Part of TsarChain — see LICENSE
 # Refs: see REFERENCES.md
 
-from .orchestrator import SimpleMiner, NodeRunner, clog, set_clog_func
+from .orchestrator import SimpleMiner, NodeRunner
 
 __all__ = [
     "SimpleMiner",
     "NodeRunner",
-    "clog",
-    "set_clog_func",
 ]
