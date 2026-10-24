@@ -628,3 +628,16 @@ def test_miner_run_mine_worker_exception(miner):
     with patch.object(miner, "_mine_block_runner", side_effect=raise_runner):
         with pytest.raises(RuntimeError, match="Worker failure"):
             miner._run_mine_worker()
+
+
+def test_cosmetic_badge_and_badges():
+    from tsarchain.miner.cosmetic import interface as COL
+    multi = COL.badges(
+        ("FIRST", COL.BG_RED),
+        ("SECOND", COL.BG_WHITE, COL.ORANGE),
+    )
+    assert "FIRST" in multi
+    assert "SECOND" in multi
+    assert COL.BG_RED in multi
+    assert COL.BG_WHITE in multi
+    assert COL.ORANGE in multi

@@ -64,7 +64,11 @@ def _run_snapshot_bootstrap(enabled: bool, log_fn=None):
         return None
 
     if CFG.BACKUP_SNAPSHOT:
-        log_fn(f"[Snapshot] Auto backup snapshots: ENABLED (Interval: every {CFG.BLOCK_BACKUP_SNAPSHOT} blocks to '{CFG.SNAPSHOT_BACKUP_DIR}')")
+        log_fn(COL.badges(
+        ("SNAPSHOTS", COL.BG_CYAN, COL.BOLD),
+        ("ENABLED", COL.BG_GREEN, COL.BOLD),
+        (f"every {CFG.BLOCK_BACKUP_SNAPSHOT} blocks -> '{CFG.SNAPSHOT_BACKUP_DIR}'", COL.ITALIC),
+    ))
     else:
         log_fn("[Snapshot] Auto backup snapshots: DISABLED")
 
@@ -137,14 +141,16 @@ class SimpleMiner:
             return False
 
         self.thread_monitor.start_monitoring()
-        self.log_fn("Thread monitoring started")
-
         if not self._start_node():
             return False
         if not self._wait_for_sync(timeout=timeout):
             return False
-        
-        self.log_fn(f"{COL.BG_WHITE}{COL.BOLD}{COL.ORANGE} Press {COL.RESET}{COL.BOLD}{COL.BG_RED} Ctrl+C {COL.RESET}{COL.BG_WHITE}{COL.BOLD}{COL.ORANGE} to stop mining {COL.RESET}")
+
+        self.log_fn(COL.badges(
+            ("Press", COL.BG_WHITE, COL.ORANGE),
+            ("Ctrl+C", COL.BG_RED),
+            ("to stop mining", COL.BG_WHITE, COL.ORANGE),
+        ))
 
         if not self._ensure_genesis():
             return False
@@ -270,12 +276,17 @@ class SimpleMiner:
         if self.tui is not None:
             self.tui.note_block_mined(block.height)
 
-        h = block.height if block.height is not None else "?"
         txs = block.transactions or []
         confirmed = max(len(txs) - 1, 0)
-        self.log_fn(
-            f"{COL.BG_GREY}{COL.BOLD}{COL.YELLOW} Block Found! {COL.RESET}{COL.BOLD}{COL.BG_RED} {h} {COL.RESET}{COL.BG_WHITE}{COL.BOLD}{COL.ORANGE} {block.hash().hex()[:64]} {COL.RESET}{COL.BOLD}{COL.BG_BLUE} {confirmed} tx{'' if confirmed == 1 else 's'} {COL.RESET}"
-        )
+        tx_label = f"{confirmed} tx" if confirmed == 1 else f"{confirmed} txs"
+
+        self.log_fn(COL.badges(
+            ("Block Found!", COL.YELLOW),
+            (block.height, COL.BG_GREEN),
+            (block.hash().hex(), COL.ITALIC),
+            (tx_label, COL.BG_RED),
+        ))
+
         try:
             sent = self.network.publish_block(block, exclude=None, force=True)
             if sent <= 0:

@@ -85,9 +85,9 @@ def main():
 
 def _stamp() -> str:
     now = datetime.now()
-    d = f"{now.year:04d}.{now.month:02d}.{now.day:02d}"
-    t = f"{now.hour:02d}.{now.minute:02d}.{now.second:02d}"
-    return f"{COL.BOLD}{COL.ORANGE}{d} {COL.BOLD}{COL.GREY}{t}{COL.RESET}"
+    d = f"{now.strftime("%d %b %Y")}"
+    t = f"{now.hour:02d}:{now.minute:02d}:{now.second:02d}"
+    return f"{COL.BOLD}{COL.GREY}{d}{COL.RESET} {COL.ITALIC}{t}{COL.RESET}"
 
 
 def _format_clog(message: str, color: str = COL.GREY) -> str:
@@ -250,8 +250,8 @@ def _run_miner(args, is_interactive: bool, is_fully_configured: bool) -> None:
             _clog("Error: --address and --cores are required for mining in non-interactive mode.", COL.RED)
             sys.exit(2)
         input_address, input_cores = COL.get_user_input()
-        address = address or input_address
-        cores = cores or input_cores
+        address = input_address
+        cores   = input_cores
 
     cores = _normalize_cores(cores)
     if cores is None:

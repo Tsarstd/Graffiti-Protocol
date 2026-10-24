@@ -53,13 +53,6 @@ GREEN   = _rgb_color(59, 196, 59)
 YELLOW  = _rgb_color(232, 215, 59)
 ORANGE  = _rgb_color(242, 132, 0)
 
-# Header Info
-BG_HEADER  = _bg_rgb_color(220, 64, 50)
-TXT_HEADER = _rgb_color(237, 237, 237)
-
-# Info Column
-TXT_INFO = _rgb_color(64, 64, 64)
-
 # Background
 BG_RED    = _bg_rgb_color(191, 34, 34)
 BG_GREY   = _bg_rgb_color(100, 100, 100)
@@ -68,7 +61,7 @@ BG_GREEN  = _bg_rgb_color(59, 196, 59)
 BG_WHITE  = _bg_rgb_color(240, 247, 249)
 BG_ORANGE = _bg_rgb_color(242, 132, 0)
 BG_YELLOW = _bg_rgb_color(232, 215, 59)
-
+BG_CYAN   = _bg_rgb_color(0, 215, 235)
 
 # Text styles
 DIM       = "\033[2m"
@@ -79,6 +72,17 @@ HIDDEN    = "\033[8m"
 ITALIC    = "\033[3m"
 REVERSE   = "\033[7m"
 UNDERLINE = "\033[4m"
+
+
+def badges(*items: tuple[object, ...]) -> str:
+    parts = []
+    for item in items:
+        text = item[0]
+        bg = item[1] if len(item) > 1 else ""
+        fg = item[2] if len(item) > 2 else ""
+        bold = item[3] if len(item) > 3 else True
+        parts.append(_joins(text, bg=bg, fg=fg, bold=bold))
+    return "".join(parts)
 
 
 def print_system_snapshot(cores_hint: int | None = None):
@@ -116,14 +120,14 @@ def print_system_snapshot(cores_hint: int | None = None):
         table.add_row("OS System", f"{uname.system} {uname.release} ({uname.machine})")
         table.add_row("Python", f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
 
-        console.print(Panel(table, title="[bold gold1]Your Sovereign Hardware Specifications[/bold gold1]", border_style="cyan", expand=False))
+        console.print(Panel(table, title="[bold gold1]Hardware Specifications[/bold gold1]", border_style="cyan", expand=False))
     except Exception as e:
         console.print(f"[bold red][snapshot] failed: {e}[/bold red]")
 
 
 def get_user_input():
     console = Console()
-    console.print("\n[bold orange1]Sovereign Miner Setup Wizard[/bold orange1]")
+    console.print("\n[bold orange1]Miner Setup[/bold orange1]")
 
     # Input address
     while True:
@@ -172,9 +176,9 @@ def get_user_input():
 
 def prompt_rx_full_mem() -> bool:
     console = Console()
-    console.print("\n[bold orange1]RandomX PoW Engine Configuration[/bold orange1]")
+    console.print("\n[bold orange1]RandomX Configuration[/bold orange1]")
     console.print("[bold green]FULL MEMORY Mode[/bold green] : Faster hashrate (+2.5GB RAM dataset)")
-    console.print("[bold blue]LIGHT MODE[/bold blue]        : Stable RAM usage (~2.5GB RAM dataset)")
+    console.print("[bold blue]LIGHT MODE[/bold blue]       : Stable RAM usage (~2.5GB RAM dataset)")
 
     vm = psutil.virtual_memory()
     total_ram_gb = vm.total / (1024 ** 3)
@@ -202,6 +206,11 @@ def prompt_rx_full_mem() -> bool:
 # =============================================================================
 # INTERNAL METHODS
 # =============================================================================
+
+
+def _joins(text: object, bg: str = "", fg: str = "", bold: bool = True) -> str:
+    style = f"{BOLD if bold else ''}{bg}{fg}"
+    return f"{style} {text} {RESET}"
 
 
 def _human_bytes(n: int | float) -> str:
