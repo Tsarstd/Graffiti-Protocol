@@ -144,7 +144,7 @@ class SimpleMiner:
         if not self._wait_for_sync(timeout=timeout):
             return False
         
-        self.log_fn(f"{COL.BOLD}{COL.BG_WHITE} Press {COL.RESET}{COL.BOLD}{COL.BG_RED} Ctrl+C {COL.RESET}{COL.BG_WHITE}{COL.BOLD}{COL.ORANGE} to stop mining {COL.RESET}")
+        self.log_fn(f"{COL.BG_WHITE}{COL.BOLD}{COL.ORANGE} Press {COL.RESET}{COL.BOLD}{COL.BG_RED} Ctrl+C {COL.RESET}{COL.BG_WHITE}{COL.BOLD}{COL.ORANGE} to stop mining {COL.RESET}")
 
         if not self._ensure_genesis():
             return False
@@ -274,7 +274,7 @@ class SimpleMiner:
         txs = block.transactions or []
         confirmed = max(len(txs) - 1, 0)
         self.log_fn(
-            f"Block mined at height {h}: {block.hash().hex()[:64]} ({confirmed} tx{'' if confirmed == 1 else 's'})"
+            f"{COL.BG_GREY}{COL.BOLD}{COL.YELLOW} Block Found! {COL.RESET}{COL.BOLD}{COL.BG_RED} {h} {COL.RESET}{COL.BG_WHITE}{COL.BOLD}{COL.ORANGE} {block.hash().hex()[:64]} {COL.RESET}{COL.BOLD}{COL.BG_BLUE} {confirmed} tx{'' if confirmed == 1 else 's'} {COL.RESET}"
         )
         try:
             sent = self.network.publish_block(block, exclude=None, force=True)

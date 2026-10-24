@@ -87,7 +87,7 @@ def _stamp() -> str:
     now = datetime.now()
     d = f"{now.year:04d}.{now.month:02d}.{now.day:02d}"
     t = f"{now.hour:02d}.{now.minute:02d}.{now.second:02d}"
-    return f"{COL.BOLD}{COL.ORANGE}{d} {COL.BOLD}{COL.GREEN}{t}{COL.RESET}"
+    return f"{COL.BOLD}{COL.ORANGE}{d} {COL.BOLD}{COL.GREY}{t}{COL.RESET}"
 
 
 def _format_clog(message: str, color: str = COL.GREY) -> str:

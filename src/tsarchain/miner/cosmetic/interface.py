@@ -38,36 +38,36 @@ def print_banner():
 
 
 # RGB custom
-def rgb_color(r, g, b):
+def _rgb_color(r, g, b):
     return f"\033[38;2;{r};{g};{b}m"
 
-def bg_rgb_color(r, g, b):
+def _bg_rgb_color(r, g, b):
     return f"\033[48;2;{r};{g};{b}m"
 
 
 # Text
-RED     = rgb_color(235, 59, 59)
-GREY    = rgb_color(245, 246, 244)
-CYAN    = rgb_color(0, 215, 235)
-GREEN   = rgb_color(59, 196, 59)
-YELLOW  = rgb_color(232, 215, 59)
-ORANGE  = rgb_color(242, 132, 0)
+RED     = _rgb_color(235, 59, 59)
+GREY    = _rgb_color(245, 246, 244)
+CYAN    = _rgb_color(0, 215, 235)
+GREEN   = _rgb_color(59, 196, 59)
+YELLOW  = _rgb_color(232, 215, 59)
+ORANGE  = _rgb_color(242, 132, 0)
 
 # Header Info
-BG_HEADER  = bg_rgb_color(220, 64, 50)
-TXT_HEADER = rgb_color(237, 237, 237)
+BG_HEADER  = _bg_rgb_color(220, 64, 50)
+TXT_HEADER = _rgb_color(237, 237, 237)
 
 # Info Column
-TXT_INFO = rgb_color(64, 64, 64)
+TXT_INFO = _rgb_color(64, 64, 64)
 
 # Background
-BG_RED    = bg_rgb_color(191, 34, 34)
-BG_GREY   = bg_rgb_color(179, 189, 193)
-BG_BLUE   = bg_rgb_color(32, 163, 223)
-BG_GREEN  = bg_rgb_color(59, 196, 59)
-BG_WHITE  = bg_rgb_color(240, 247, 249)
-BG_ORANGE = bg_rgb_color(242, 132, 0)
-BG_YELLOW = bg_rgb_color(232, 215, 59)
+BG_RED    = _bg_rgb_color(191, 34, 34)
+BG_GREY   = _bg_rgb_color(100, 100, 100)
+BG_BLUE   = _bg_rgb_color(32, 163, 223)
+BG_GREEN  = _bg_rgb_color(59, 196, 59)
+BG_WHITE  = _bg_rgb_color(240, 247, 249)
+BG_ORANGE = _bg_rgb_color(242, 132, 0)
+BG_YELLOW = _bg_rgb_color(232, 215, 59)
 
 
 # Text styles
@@ -79,44 +79,6 @@ HIDDEN    = "\033[8m"
 ITALIC    = "\033[3m"
 REVERSE   = "\033[7m"
 UNDERLINE = "\033[4m"
-
-
-def _human_bytes(n: int | float) -> str:
-    try:
-        n = float(n)
-    except (ValueError, TypeError):
-        return "?"
-    for unit in ("B", "KB", "MB", "GB", "TB", "PB"):
-        if n < 1024.0:
-            return f"{n:.1f} {unit}"
-        n /= 1024.0
-    return f"{n:.1f} EB"
-
-
-def _cpu_brand() -> str:
-    sysname = platform.system()
-    if sysname == "Windows":
-        with contextlib.suppress(Exception):
-            import winreg  # type: ignore
-            with winreg.OpenKey(
-                winreg.HKEY_LOCAL_MACHINE,
-                r"HARDWARE\DESCRIPTION\System\CentralProcessor\0"
-            ) as k:
-                name, _ = winreg.QueryValueEx(k, "ProcessorNameString")
-                clean = " ".join(str(name).split())
-                if clean:
-                    return clean
-    elif sysname == "Linux":
-        with contextlib.suppress(Exception):
-            with open("/proc/cpuinfo", "r", encoding="utf-8", errors="ignore") as f:
-                for line in f:
-                    if "model name" in line:
-                        clean = " ".join(line.split(":", 1)[1].strip().split())
-                        if clean:
-                            return clean
-    name = platform.processor() or ""
-    clean = " ".join(str(name).split())
-    return clean or "Unknown CPU"
 
 
 def print_system_snapshot(cores_hint: int | None = None):
@@ -158,34 +120,6 @@ def print_system_snapshot(cores_hint: int | None = None):
     except Exception as e:
         console.print(f"[bold red][snapshot] failed: {e}[/bold red]")
 
-        phys = psutil.cpu_count(logical=False) or 0
-        logi = psutil.cpu_count(logical=True) or 0
-
-        table = Table(show_header=False, box=None, padding=(0, 1))
-        table.add_column("Key", style="bold cyan")
-        table.add_column("Value", style="bold white")
-
-        table.add_row("CPU Model", _cpu_brand())
-
-        core_info = f"{phys} physical / {logi} logical"
-        if cores_hint:
-            core_info += f" (recommended: {cores_hint})"
-        table.add_row("CPU Cores", core_info)
-
-        if freq:
-            base = f"{(freq.min or 0)/1000:.2f}"
-            cur  = f"{(freq.current or 0)/1000:.2f}"
-            mx   = f"{(freq.max or 0)/1000:.2f}"
-            table.add_row("CPU Speed", f"{cur} GHz (base ~{base} / boost ~{mx})")
-
-        table.add_row("RAM Memory", f"{_human_bytes(vm.total)} total, {_human_bytes(vm.available)} free")
-        table.add_row("Disk Space", f"{_human_bytes(du.free)} free of {_human_bytes(du.total)}")
-        table.add_row("OS System", f"{uname.system} {uname.release} ({uname.machine})")
-        table.add_row("Python", f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
-
-        console.print(Panel(table, title="[bold gold1]Your Sovereign Hardware Specifications[/bold gold1]", border_style="cyan", expand=False))
-    except Exception as e:
-        console.print(f"[bold red][snapshot] failed: {e}[/bold red]")
 
 def get_user_input():
     console = Console()
@@ -235,6 +169,7 @@ def get_user_input():
 
     return address, cores
 
+
 def prompt_rx_full_mem() -> bool:
     console = Console()
     console.print("\n[bold orange1]RandomX PoW Engine Configuration[/bold orange1]")
@@ -262,3 +197,46 @@ def prompt_rx_full_mem() -> bool:
     else:
         console.print("[bold blue]✓ RandomX LIGHT MODE Selected[/bold blue]\n")
     return enabled
+
+
+# =============================================================================
+# INTERNAL METHODS
+# =============================================================================
+
+
+def _human_bytes(n: int | float) -> str:
+    try:
+        n = float(n)
+    except (ValueError, TypeError):
+        return "?"
+    for unit in ("B", "KB", "MB", "GB", "TB", "PB"):
+        if n < 1024.0:
+            return f"{n:.1f} {unit}"
+        n /= 1024.0
+    return f"{n:.1f} EB"
+
+
+def _cpu_brand() -> str:
+    sysname = platform.system()
+    if sysname == "Windows":
+        with contextlib.suppress(Exception):
+            import winreg  # type: ignore
+            with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"HARDWARE\DESCRIPTION\System\CentralProcessor\0"
+            ) as k:
+                name, _ = winreg.QueryValueEx(k, "ProcessorNameString")
+                clean = " ".join(str(name).split())
+                if clean:
+                    return clean
+    elif sysname == "Linux":
+        with contextlib.suppress(Exception):
+            with open("/proc/cpuinfo", "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    if "model name" in line:
+                        clean = " ".join(line.split(":", 1)[1].strip().split())
+                        if clean:
+                            return clean
+    name = platform.processor() or ""
+    clean = " ".join(str(name).split())
+    return clean or "Unknown CPU"
