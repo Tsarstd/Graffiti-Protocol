@@ -18,7 +18,7 @@ from ..network.node import Network
 from ..consensus.blockchain import Blockchain
 from ..utils.bootstrap import maybe_bootstrap_snapshot
 
-from .cosmetic import interface as COL
+from .cosmetic import interface as INFO
 from tsarchain.utils.thread_check import get_thread_monitor, register_thread_monitoring_signal
 
 from ..utils.tsar_logging import get_ctx_logger
@@ -59,34 +59,30 @@ def _register_bootstrap_peers(network: Network) -> int:
 
 
 def _run_snapshot_bootstrap(enabled: bool, log_fn=None):
+    _log = log_fn or (lambda msg, *a, **kw: log.info(msg))
     if not enabled:
-        log_fn("[Bootstrap] Fast Sync Snapshot: DISABLED. Proceeding with Seed RPC sync.")
+        _log(INFO.snapshot_info("disabled"))
         return None
 
     if CFG.BACKUP_SNAPSHOT:
-        log_fn(COL.badges(
-        ("SNAPSHOTS", COL.BG_CYAN, COL.BOLD),
-        ("ENABLED", COL.BG_GREEN, COL.BOLD),
-        (f"every {CFG.BLOCK_BACKUP_SNAPSHOT} blocks -> '{CFG.SNAPSHOT_BACKUP_DIR}'", COL.ITALIC),
-    ))
+        _log(INFO.snapshot_info("backup"))
     else:
-        log_fn("[Snapshot] Auto backup snapshots: DISABLED")
+        _log(INFO.snapshot_info("backup_disabled"))
 
     def _printer(message: str):
-        log_fn(f"[Bootstrap] {message}")
+        _log(INFO.snapshot_info("progress", message))
 
     result = maybe_bootstrap_snapshot(progress_cb=_printer)
     if result.status == "failed":
-        log_fn(f"[Bootstrap] Snapshot fast sync failed: {result.reason}. Falling back to standard P2P Seed RPC sync.")
+        _log(INFO.snapshot_info("failed", result.reason))
     elif result.status == "skipped":
-        log_fn(f"[Bootstrap] Snapshot fast sync skipped ({result.reason}). Using standard P2P Seed RPC sync.")
+        _log(INFO.snapshot_info("skipped", result.reason))
     elif result.status == "installed":
         bytes_mb = float(result.bytes_written or 0) / (1024 * 1024)
         duration = float(result.duration_s or 0)
-        log_fn(f"[Bootstrap] Snapshot SUCCESS! Restored local database to height {result.height} ({bytes_mb:.2f} MB in {duration:.1f}s)")
-        log_fn("[Bootstrap] Database restored. Syncing remaining blocks...")
+        _log(INFO.snapshot_info("installed", f"height {result.height} ({bytes_mb:.2f} MB in {duration:.1f}s)"))
     else:
-        log_fn(f"[Bootstrap] Snapshot status: {result.status} ({result.reason})")
+        _log(INFO.snapshot_info("progress", f"Status: {result.status} ({result.reason})"))
     return result
 
 
@@ -146,11 +142,7 @@ class SimpleMiner:
         if not self._wait_for_sync(timeout=timeout):
             return False
 
-        self.log_fn(COL.badges(
-            ("Press", COL.BG_WHITE, COL.ORANGE),
-            ("Ctrl+C", COL.BG_RED),
-            ("to stop mining", COL.BG_WHITE, COL.ORANGE),
-        ))
+        self.log_fn(INFO.mining_stop_info())
 
         if not self._ensure_genesis():
             return False
@@ -172,7 +164,7 @@ class SimpleMiner:
 
         if self.network:
             self.network.shutdown()
-        self.log_fn("Miner stopped")
+        self.log_fn(INFO.node_info("stopped", "Miner stopped"))
         self.thread_monitor.stop_monitoring()
 
 
@@ -185,9 +177,9 @@ class SimpleMiner:
         if (self.blockchain.height if self.blockchain else -1) < 0:
             created = self.blockchain.ensure_genesis(self.address, use_cores=self.cores)
             if created:
-                self.log_fn("Genesis block created")
+                self.log_fn(INFO.genesis_info(True))
             else:
-                self.log_fn("Failed to create genesis block")
+                self.log_fn(INFO.genesis_info(False))
                 return False
         return True
 
@@ -201,7 +193,7 @@ class SimpleMiner:
     def _check_mining_sync(self, last_gap_log: object = None) -> tuple[bool, object]:
         if not self._has_active_peers() and not self._bootstrap_is_self_only():
             if last_gap_log != "no_peers":
-                self.log_fn("[mining] No active peers; pausing mining until peers are back.")
+                self.log_fn(INFO.sync_info("paused_peers"))
             time.sleep(2)
             return False, "no_peers"
 
@@ -212,22 +204,20 @@ class SimpleMiner:
 
         if trusted_height < 0:
             if last_gap_log != "no_trusted":
-                self.log_fn("[mining] Waiting for trusted bootstrap height before mining...")
+                self.log_fn(INFO.sync_info("waiting_trusted"))
             self._request_sync_wait()
             return False, "no_trusted"
 
         gap = trusted_height - local_height
         if gap > 0:
             if last_gap_log != gap:
-                self.log_fn(
-                    f"[mining] Local height {local_height} behind trusted {trusted_height} (gap {gap}); syncing before mining..."
-                )
+                self.log_fn(INFO.sync_info("gap", str(local_height), str(trusted_height)))
             self._request_sync_wait()
             return False, gap
 
         if trusted_hash and local_hash and local_hash.lower() != trusted_hash:
             if last_gap_log != "hash_mismatch":
-                self.log_fn("[mining] Local tip hash differs from trusted; syncing before mining...")
+                self.log_fn(INFO.sync_info("mismatch"))
             self._request_sync_wait()
             return False, "hash_mismatch"
 
@@ -241,7 +231,7 @@ class SimpleMiner:
             if self.cancel_mining.is_set():
                 worker_cancel.set()
                 if not cancel_logged:
-                    self.log_fn("[mining] Cancellation requested; waiting for miner thread to stop...")
+                    self.log_fn(INFO.node_info("stopping", "Cancellation requested; waiting for miner worker..."))
                     cancel_logged = True
             elif self.abort_block_mining.is_set():
                 worker_cancel.set()
@@ -278,14 +268,10 @@ class SimpleMiner:
 
         txs = block.transactions or []
         confirmed = max(len(txs) - 1, 0)
-        tx_label = f"{confirmed} tx" if confirmed == 1 else f"{confirmed} txs"
 
-        self.log_fn(COL.badges(
-            ("Block Found!", COL.YELLOW),
-            (block.height, COL.BG_GREEN),
-            (block.hash().hex(), COL.ITALIC),
-            (tx_label, COL.BG_RED),
-        ))
+        b_hash = block.hash().hex()
+        tx_label = f"{confirmed} tx" if confirmed == 1 else f"{confirmed} txs"
+        self.log_fn(INFO.block_found_info(block.height, b_hash, tx_label))
 
         try:
             sent = self.network.publish_block(block, exclude=None, force=True)
@@ -293,15 +279,14 @@ class SimpleMiner:
                 self.network.request_sync(fast=True)
                 self._queue_block_for_broadcast(block)
         except Exception as exc:
-            self.log_fn(f"Broadcast error: {exc}")
+            self.log_fn(INFO.error_info("BROADCAST", str(exc)))
             self._queue_block_for_broadcast(block)
 
 
     def _handle_tip_abort(self) -> None:
         self.abort_block_mining.clear()
         tip_h, tip_hx = self._get_local_tip()
-        hx_str = f" [{tip_hx[:16]}...]" if tip_hx else ""
-        self.log_fn(f"Received new block at height {tip_h}{hx_str}; switch to latest tip.")
+        self.log_fn(INFO.tip_switch_info(tip_h, tip_hx or ""))
 
 
     def _process_mining_result(self, block) -> None:
@@ -317,18 +302,18 @@ class SimpleMiner:
             self.cancel_mining.set()
         if self.abort_block_mining:
             self.abort_block_mining.set()
-        self.log_fn("[signal] Mining interrupted by user")
+        self.log_fn(INFO.node_info("interrupted", "Mining interrupted by user"))
 
 
     def _handle_mining_os_error(self, exc: OSError) -> bool:
         if exc.errno in INTERRUPTED_ERRNOS:
-            self.log_fn("[mining] Interrupted system call; stopping miners...")
+            self.log_fn(INFO.node_info("stopping", "Interrupted system call; stopping miners..."))
             self.mining_alive = False
             self.cancel_mining.set()
             if self.abort_block_mining:
                 self.abort_block_mining.set()
             return True
-        self.log_fn(f"Mining error: {exc}")
+        self.log_fn(INFO.error_info("MINING", str(exc)))
         time.sleep(1)
         return False
 
@@ -359,13 +344,13 @@ class SimpleMiner:
                 if self._handle_mining_os_error(exc):
                     break
             except Exception as exc:
-                self.log_fn(f"Mining error: {exc}")
+                self.log_fn(INFO.error_info("MINING", str(exc)))
                 time.sleep(1)
 
 
 
     def _signal_handler(self, signum, _frame):
-        self.log_fn(f"Received signal {signum}, shutting down...")
+        self.log_fn(INFO.node_info("stopping", f"Signal {signum} received, shutting down..."))
         self.mining_alive = False
         if self.cancel_mining:
             self.cancel_mining.set()
@@ -375,11 +360,11 @@ class SimpleMiner:
 
     def _validate_address(self):
         if not self.address:
-            self.log_fn("Error: Address is required (tsar1...).")
+            self.log_fn(INFO.error_info("ADDRESS", "Address is required (tsar1...)."))
             return False
         addr = self.address.strip().lower()
         if not ADDRESS_PATTERN.match(addr):
-            self.log_fn("Error: Address must start with 'tsar1' and contain only lowercase base32 chars (length 24-124).")
+            self.log_fn(INFO.error_info("ADDRESS", "Address must start with 'tsar1' and contain only lowercase base32 chars (length 24-124)."))
             return False
         self.address = addr
         return True
@@ -408,7 +393,7 @@ class SimpleMiner:
                     self._pending_block_hashes.discard(blk.hash().hex())
                     continue
             except Exception as exc:
-                self.log_fn(f"[broadcast] retry failed: {exc}")
+                self.log_fn(INFO.warn_info("BROADCAST", f"Retry failed: {exc}"))
             remaining.append(blk)
         self._pending_blocks = remaining
 
@@ -552,16 +537,16 @@ class SimpleMiner:
             self.network.start()
             self.network.warmup_background()
             peer_count = _register_bootstrap_peers(self.network)
-            self.log_fn(f"Node started with {peer_count} bootstrap peers")
+            self.log_fn(INFO.node_info("started", f"{peer_count} bootstrap peers"))
             return True
         except Exception as exc:
             log.exception("error")
-            self.log_fn(f"Failed to start node: {exc}")
+            self.log_fn(INFO.error_info("NODE", f"Failed to start node: {exc}"))
             return False
 
 
     def _wait_for_sync(self, timeout=560):
-        self.log_fn("Waiting for blockchain sync...")
+        self.log_fn(INFO.sync_info("waiting", "Waiting for blockchain sync..."))
         start_time = time.time()
         last_progress = (-1, -1, -1)
 
@@ -575,7 +560,7 @@ class SimpleMiner:
 
                 active_peers = self._has_active_peers()
                 if not active_peers and not self._bootstrap_is_self_only():
-                    self.log_fn("[Sync] Waiting for peer connection...")
+                    self.log_fn(INFO.sync_info("waiting_peers"))
                     time.sleep(3)
                     continue
 
@@ -589,10 +574,10 @@ class SimpleMiner:
                     and local_h >= best_known
                     and (trusted_hash is None or (local_hash and local_hash.lower() == trusted_hash))
                 ):
-                    self.log_fn(f"Chain synced to height {local_h} (trusted tip {best_known})")
+                    self.log_fn(INFO.sync_info("synced", str(local_h), str(best_known)))
                     return True
                 if trusted_hash and local_hash and local_hash.lower() != trusted_hash:
-                    self.log_fn("[Sync] Local tip hash differs from trusted; requesting resync...")
+                    self.log_fn(INFO.sync_info("mismatch"))
                     if self.network:
                         self.network.request_sync(fast=True)
                     time.sleep(2)
@@ -601,14 +586,14 @@ class SimpleMiner:
                 progress = (height, best_known, trusted_height)
                 if best_known >= 0 and progress != last_progress:
                     tip_label = trusted_height if trusted_height >= 0 else best_known
-                    self.log_fn(f"Sync progress - local {height}, trusted best {tip_label}")
+                    self.log_fn(INFO.sync_info("progress", str(height), str(tip_label)))
                     last_progress = progress
                 time.sleep(2)
             except Exception as exc:
-                self.log_fn(f"Sync error: {exc}")
+                self.log_fn(INFO.error_info("SYNC", str(exc)))
                 time.sleep(2)
 
-        self.log_fn("Sync timeout or interrupted")
+        self.log_fn(INFO.sync_info("timeout"))
         return False
 
 
@@ -629,7 +614,7 @@ class NodeRunner:
 
 
     def start(self):
-        self.log_fn("Starting TsarChain node (no mining)...")
+        self.log_fn(INFO.node_info("starting", "Starting TsarChain node (no mining)..."))
         try:
             _run_snapshot_bootstrap(self.bootstrap_snapshot, log_fn=self.log_fn)
             self.blockchain = Blockchain(
@@ -638,13 +623,13 @@ class NodeRunner:
             )
             
             self._last_chain_height = int(self.blockchain.height if self.blockchain else -1)
-            self.log_fn(f"Local chain height: {self._last_chain_height}")
+            self.log_fn(INFO.sync_info("height", str(self._last_chain_height)))
             
             self.network = Network(blockchain=self.blockchain)
             self.network.start()
             self.network.warmup_background()
             peer_count = _register_bootstrap_peers(self.network)
-            self.log_fn(f"Node online on port {self.network.port}, bootstrap peers: {peer_count}")
+            self.log_fn(INFO.node_info("started", f"Online on port {self.network.port}, {peer_count} peers"))
 
             # == Early fast-sync ==
             def _early_sync():
@@ -667,7 +652,7 @@ class NodeRunner:
                 time.sleep(2)
                 
         except Exception as exc:
-            self.log_fn(f"Node error: {exc}")
+            self.log_fn(INFO.error_info("NODE", str(exc)))
             
         finally:
             self._shutdown()
@@ -679,7 +664,7 @@ class NodeRunner:
 
 
     def _handle_signal(self, *_args):
-        self.log_fn("Stopping node...")
+        self.log_fn(INFO.node_info("stopping", "Stopping node..."))
         log.info("Ctrl+C received - stopping node-only runner.")
         self.running = False
 
@@ -696,9 +681,9 @@ class NodeRunner:
             try:
                 # No peers yet
                 if not self._has_active_peers():
-                    msg = "[Sync] Waiting for peer connection..."
+                    msg = "waiting_peers"
                     if msg != last_status:
-                        self.log_fn(msg)
+                        self.log_fn(INFO.sync_info("waiting_peers"))
                         last_status = msg
                     self._sync_ready = False
                     time.sleep(5)
@@ -709,7 +694,7 @@ class NodeRunner:
                 # Progress print (only when changed)
                 if height != self._last_chain_height:
                     if height >= 0:
-                        self.log_fn(f"[Sync] Chain height now {height}")
+                        self.log_fn(INFO.sync_info("height", str(height)))
                     self._last_chain_height = height
 
                 peer_sync_map = self.network._peer_last_sync or {}
@@ -717,7 +702,7 @@ class NodeRunner:
                 synced_recently = latest_sync and (time.time() - latest_sync) < 10
                 if not self._sync_ready and height >= 0 and synced_recently:
                     self._sync_ready = True
-                    self.log_fn("Chain has been confirmed. Node is live (no mining).")
+                    self.log_fn(INFO.sync_info("confirmed", "Node is live (no mining)"))
 
                 if not self._sync_ready:
                     self.network.request_sync(fast=True)
@@ -727,7 +712,7 @@ class NodeRunner:
                     time.sleep(30)
 
             except Exception as e:
-                self.log_fn(f"[node-only] sync error: {e}")
+                self.log_fn(INFO.error_info("SYNC", str(e)))
                 time.sleep(5)
 
 
@@ -740,5 +725,5 @@ class NodeRunner:
             if t and t.is_alive():
                 t.join(timeout=2.5)
         self._threads.clear()
-        self.log_fn("Node stopped.")
+        self.log_fn(INFO.node_info("stopped", "Node stopped."))
         log.info("Node-only runner stopped (cleanup complete).")

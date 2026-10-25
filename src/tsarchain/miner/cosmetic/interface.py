@@ -16,6 +16,7 @@ from rich.prompt import Prompt
 from rich.prompt import Confirm
 from rich.console import Console
 
+from ...utils import config as CFG
 from .tui import _enable_windows_vt100
 
 _enable_windows_vt100()
@@ -73,16 +74,6 @@ ITALIC    = "\033[3m"
 REVERSE   = "\033[7m"
 UNDERLINE = "\033[4m"
 
-
-def badges(*items: tuple[object, ...]) -> str:
-    parts = []
-    for item in items:
-        text = item[0]
-        bg = item[1] if len(item) > 1 else ""
-        fg = item[2] if len(item) > 2 else ""
-        bold = item[3] if len(item) > 3 else True
-        parts.append(_joins(text, bg=bg, fg=fg, bold=bold))
-    return "".join(parts)
 
 
 def print_system_snapshot(cores_hint: int | None = None):
@@ -203,9 +194,147 @@ def prompt_rx_full_mem() -> bool:
     return enabled
 
 
+# ----- CLI INTERFACE INFO ------
+
+
+def snapshot_info(status: str = "backup", detail: str = ""):
+    if status == "backup":
+        return _badges(
+            ("SNAPSHOTS", YELLOW),
+            ("ENABLED", BG_GREEN, BOLD),
+            (f"every {CFG.BLOCK_BACKUP_SNAPSHOT} blocks -> '{CFG.SNAPSHOT_BACKUP_DIR}'", ITALIC),
+        )
+    if status == "backup_disabled":
+        return _badges(
+            ("SNAPSHOTS", YELLOW),
+            ("DISABLED", BG_RED, BOLD),
+            ("Periodic backup snapshots disabled", ITALIC),
+        )
+    if status == "disabled":
+        return _badges(
+            ("BOOTSTRAP", YELLOW),
+            ("DISABLED", BG_RED, BOLD),
+            ("Fast sync disabled; proceeding with Seed RPC sync", ITALIC),
+        )
+    if status == "installed":
+        return _badges(
+            ("BOOTSTRAP", YELLOW),
+            ("SUCCESS", BG_GREEN, BOLD),
+            (f"Restored database to {detail}", ITALIC),
+        )
+    if status == "failed":
+        return _badges(
+            ("BOOTSTRAP", YELLOW),
+            ("FAILED", BG_RED, BOLD),
+            (f"{detail} (falling back to Seed RPC)", YELLOW),
+        )
+    if status == "skipped":
+        return _badges(
+            ("BOOTSTRAP", YELLOW),
+            ("SKIPPED", BG_YELLOW, BOLD),
+            (f"{detail} (using standard P2P sync)", ITALIC),
+        )
+    return _badges(
+        ("BOOTSTRAP", YELLOW),
+        ("SYNC", BG_CYAN, BOLD),
+        (detail or status, ITALIC),
+    )
+
+
+def node_info(status: str, detail: str = ""):
+    if status == "started":
+        return _badges(("NODE", YELLOW), ("ONLINE", BG_CYAN, BOLD), (detail, ITALIC))
+    if status == "starting":
+        return _badges(("NODE", YELLOW), ("STARTING", BG_YELLOW, BOLD), (detail, ITALIC))
+    if status == "stopping":
+        return _badges(("NODE", YELLOW), ("STOPPING", BG_RED, BOLD), (detail, ITALIC))
+    if status == "stopped":
+        return _badges(("NODE", YELLOW), ("STOPPED", BG_RED, BOLD), (detail or "Node stopped", ITALIC))
+    if status == "interrupted":
+        return _badges(("SIGNAL", YELLOW), ("INTERRUPT", BG_RED, BOLD), (detail or "Mining interrupted by user", YELLOW))
+    return _badges(("NODE", YELLOW), (detail or status, ITALIC))
+
+
+def sync_info(status: str, detail: str = "", extra: str = ""):
+    if status == "waiting":
+        return _badges(("SYNC", YELLOW), ("WAITING", BG_YELLOW, BOLD), (detail or "Waiting for blockchain sync...", ITALIC))
+    if status == "waiting_peers":
+        return _badges(("SYNC", YELLOW), ("PEERS", BG_BLUE, BOLD), ("Waiting for peer connection...", ITALIC))
+    if status == "waiting_trusted":
+        return _badges(("SYNC", YELLOW), ("BOOTSTRAP", BG_BLUE, BOLD), ("Waiting for trusted bootstrap height...", ITALIC))
+    if status == "paused_peers":
+        return _badges(("MINING", YELLOW), ("PAUSED", BG_RED, BOLD), ("No active peers; waiting for peers...", ITALIC))
+    if status == "synced":
+        tip_str = f" (trusted tip {extra})" if extra else ""
+        return _badges(("SYNC", YELLOW), ("READY", BG_GREEN, BOLD), (f"Chain synced to height {detail}{tip_str}", ITALIC))
+    if status == "gap":
+        return _badges(("SYNC", YELLOW), ("CATCHUP", BG_ORANGE, BOLD), (f"Local {detail} behind trusted tip {extra}; syncing...", ITALIC))
+    if status == "progress":
+        return _badges(("SYNC", YELLOW), ("PROGRESS", BG_CYAN, BOLD), (f"Local height {detail}, trusted best {extra}", ITALIC))
+    if status == "mismatch":
+        return _badges(("SYNC", YELLOW), ("RESYNC", BG_YELLOW, BOLD), ("Local tip hash differs from trusted; resyncing...", ITALIC))
+    if status == "timeout":
+        return _badges(("SYNC", YELLOW), ("TIMEOUT", BG_RED, BOLD), ("Sync timeout or interrupted", ITALIC))
+    if status == "confirmed":
+        return _badges(("CHAIN", YELLOW), ("CONFIRMED", BG_GREEN, BOLD), (detail or "Node is live (no mining)", ITALIC))
+    if status == "height":
+        return _badges(("CHAIN", YELLOW), ("HEIGHT", BG_BLUE, BOLD), (f"Local chain height: {detail}", ITALIC))
+    return _badges(("SYNC", YELLOW), (detail or status, ITALIC))
+
+
+def genesis_info(created: bool):
+    if created:
+        return _badges(("GENESIS", YELLOW), ("CREATED", BG_GREEN, BOLD), ("Genesis block created & locked in LMDB", ITALIC))
+    return _badges(("GENESIS", YELLOW), ("FAILED", BG_RED, BOLD), ("Failed to create genesis block", YELLOW))
+
+
+def tip_switch_info(height: int, tip_hash: str = ""):
+    hx_str = f" [{tip_hash[:16]}...]" if tip_hash else ""
+    return _badges(("MINING", YELLOW), ("NEW TIP", BG_CYAN, BOLD), (f"New block at height {height}{hx_str}; switching tip", ITALIC))
+
+
+def error_info(tag: str, message: str):
+    return _badges(("ERROR", RED), (tag, BG_GREY, RED), (message, YELLOW))
+
+
+def warn_info(tag: str, message: str):
+    return _badges(("WARN", YELLOW), (tag, BG_GREY, ORANGE), (message, GREY))
+
+
+def mining_stop_info():
+    return _badges(
+        ("Press", BG_WHITE, ORANGE),
+        ("Ctrl+C", BG_RED),
+        ("to stop mining", BG_WHITE, ORANGE),
+    )
+
+
+def block_found_info(b_height, b_hash, tx_label):
+    return _badges(
+        ("Block Found!", YELLOW),
+        (b_height, BG_GREEN),
+        (b_hash, ITALIC),
+        (tx_label, BG_RED),
+    )
+
+
+# ----- END OF CLI INTERFACE INFO ------
+
+
 # =============================================================================
 # INTERNAL METHODS
 # =============================================================================
+
+
+def _badges(*items: tuple[object, ...]) -> str:
+    parts = []
+    for item in items:
+        text = item[0]
+        bg = item[1] if len(item) > 1 else ""
+        fg = item[2] if len(item) > 2 else ""
+        bold = item[3] if len(item) > 3 else True
+        parts.append(_joins(text, bg=bg, fg=fg, bold=bold))
+    return "".join(parts)
 
 
 def _joins(text: object, bg: str = "", fg: str = "", bold: bool = True) -> str:

@@ -632,7 +632,7 @@ def test_miner_run_mine_worker_exception(miner):
 
 def test_cosmetic_badge_and_badges():
     from tsarchain.miner.cosmetic import interface as COL
-    multi = COL.badges(
+    multi = COL._badges(
         ("FIRST", COL.BG_RED),
         ("SECOND", COL.BG_WHITE, COL.ORANGE),
     )
@@ -641,3 +641,52 @@ def test_cosmetic_badge_and_badges():
     assert COL.BG_RED in multi
     assert COL.BG_WHITE in multi
     assert COL.ORANGE in multi
+
+
+
+def test_cosmetic_snapshot_info_flags():
+    from tsarchain.miner.cosmetic import interface as COL
+    assert "SNAPSHOTS" in COL.snapshot_info("backup")
+    assert "ENABLED" in COL.snapshot_info("backup")
+    assert "DISABLED" in COL.snapshot_info("backup_disabled")
+    assert "DISABLED" in COL.snapshot_info("disabled")
+    assert "BOOTSTRAP" in COL.snapshot_info("disabled")
+    assert "SUCCESS" in COL.snapshot_info("installed", "height 100")
+    assert "FAILED" in COL.snapshot_info("failed", "network timeout")
+    assert "SKIPPED" in COL.snapshot_info("skipped", "already synced")
+    assert "SYNC" in COL.snapshot_info("progress", "downloading chunk 1")
+
+
+def test_cosmetic_node_sync_genesis_badges():
+    from tsarchain.miner.cosmetic import interface as COL
+
+    # node_info
+    assert "ONLINE" in COL.node_info("started", "3 peers")
+    assert "STARTING" in COL.node_info("starting", "node runner")
+    assert "STOPPING" in COL.node_info("stopping", "shutting down")
+    assert "STOPPED" in COL.node_info("stopped", "miner stopped")
+    assert "INTERRUPT" in COL.node_info("interrupted", "user abort")
+
+    # sync_info
+    assert "WAITING" in COL.sync_info("waiting")
+    assert "PEERS" in COL.sync_info("waiting_peers")
+    assert "BOOTSTRAP" in COL.sync_info("waiting_trusted")
+    assert "PAUSED" in COL.sync_info("paused_peers")
+    assert "READY" in COL.sync_info("synced", "10", "10")
+    assert "CATCHUP" in COL.sync_info("gap", "5", "10")
+    assert "PROGRESS" in COL.sync_info("progress", "5", "10")
+    assert "RESYNC" in COL.sync_info("mismatch")
+    assert "TIMEOUT" in COL.sync_info("timeout")
+    assert "CONFIRMED" in COL.sync_info("confirmed", "live")
+    assert "HEIGHT" in COL.sync_info("height", "42")
+
+    # genesis_info
+    assert "CREATED" in COL.genesis_info(True)
+    assert "FAILED" in COL.genesis_info(False)
+
+    # tip_switch_info
+    assert "NEW TIP" in COL.tip_switch_info(50, "deadbeefcafebabe")
+
+    # error & warn
+    assert "ERROR" in COL.error_info("BROADCAST", "connection refused")
+    assert "WARN" in COL.warn_info("BROADCAST", "retry 1")
